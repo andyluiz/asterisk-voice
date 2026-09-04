@@ -1,0 +1,37 @@
+{
+  "name": "asterisk-voice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin for Asterisk ARI realtime voice calls.",
+  "dependencies": {
+    "commander": "14.0.3",
+    "ws": "8.21.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.27"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.js"
+    ],
+    "install": {
+      "defaultChoice": "path",
+      "minHostVersion": ">=2026.5.27"
+    },
+    "compat": {
+      "pluginApi": ">=2026.5.27"
+    },
+    "runtimeExtensions": [
+      "./src/index.js"
+    ]
+  },
+  "devDependencies": {
+    "openclaw": "file:../../../.npm-global/lib/node_modules/openclaw"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "asterisk-hermes-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-only Asterisk ExternalMedia companion for Hermes.",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "test:realtime": "node scripts/realtime_scenario_smoke.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.17.1"
+  }
+}

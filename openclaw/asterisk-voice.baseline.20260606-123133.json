@@ -1,0 +1,31 @@
+{
+  "capturedAt": "2026-06-06T12:31:48+02:00",
+  "source": "/home/anderson/.openclaw/openclaw.json",
+  "note": "Sanitized asterisk-voice baseline only. Full config backup is stored in .local-backups and ignored by git.",
+  "plugin": {
+    "enabled": true,
+    "config": {
+      "externalMediaHost": "127.0.0.1",
+      "realtime": {
+        "provider": "openai",
+        "providers": {
+          "openai": {
+            "apiKey": "<redacted: use OPENAI_API_KEY or local secret>",
+            "model": "gpt-realtime-2",
+            "fallbackModel": "gpt-realtime-mini"
+          }
+        },
+        "enabled": true,
+        "instructions": "Voce e Hal, assistente do Anderson. Responda em portugues do Brasil, de forma curta e natural.",
+        "greeting": "Oi Anderson, aqui e o Hal. Pode falar."
+      },
+      "enabled": true,
+      "ariUrl": "http://127.0.0.1:8088/ari",
+      "ariUsername": "openclaw",
+      "ariPassword": "openclaw-local-change-me",
+      "ariApp": "openclaw",
+      "defaultContext": "internal",
+      "defaultTo": "1001"
+    }
+  }
+}
