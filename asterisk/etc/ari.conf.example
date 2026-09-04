@@ -1,9 +1,0 @@
-[general]
-enabled=yes
-pretty=yes
-allowed_origins=*
-
-[openclaw]
-type=user
-read_only=no
-password=REPLACE_WITH_A_LOCAL_SECRET

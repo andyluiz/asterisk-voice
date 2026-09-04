@@ -4,9 +4,6 @@ recordings/
 .env
 companion/node_modules/
 mcp/__pycache__/
-# Live PBX credentials/configuration stay local; commit only *.example templates.
-asterisk/etc/ari.conf
-asterisk/etc/pjsip.conf
 # Local review notes and generated test/debug artifacts.
 OPENCODE_REVIEW_BRIEF.md
 *.log

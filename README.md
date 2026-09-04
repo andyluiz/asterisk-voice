@@ -1,51 +1,56 @@
-# Asterisk Voice Plugin
+# Asterisk Voice Companion
 
-LAN-only Asterisk voice plugin for OpenClaw experiments. It owns ARI call control, SIP/PJSIP endpoints, RTP ExternalMedia, and OpenClaw Realtime audio bridging.
+Standalone Node service that bridges Asterisk ARI/ExternalMedia RTP (G.711 μ-law) to OpenAI Realtime.
 
-## Services
+This repository contains **only the companion service**. Asterisk PBX is external infrastructure.
 
-- `asterisk`: local PBX with ARI, PJSIP extension `1001`, optional test extension `1002`, and Stasis app `openclaw`.
-- `asterisk-voice`: OpenClaw plugin loaded by the Gateway from `src/index.js`.
-
-## Quick Start
+## Quick start
 
 ```bash
-cd /path/to/asterisk-voice
+# 1. Have a running Asterisk with ARI enabled (see companion/README.md)
+# 2. Configure
 cp .env.example .env
-cp asterisk/etc/ari.conf.example asterisk/etc/ari.conf
-cp asterisk/etc/pjsip.conf.example asterisk/etc/pjsip.conf
-# Fill the local placeholders before starting.
-docker compose up -d
+# Edit .env with your Asterisk ARI credentials, OpenAI key, etc.
+
+# 3. Build and run companion
+docker compose up -d --build
+
+# 4. Verify
+curl -H "Authorization: Bearer $COMPANION_TOKEN" http://localhost:8091/health
 ```
 
-## LAN Softphone
+## Structure
 
-Register a SIP softphone against this host using the local credentials configured in `asterisk/etc/pjsip.conf`. Do not commit that file; the repository provides `pjsip.conf.example` only.
+```
+├── companion/           # The companion service (Docker image, source, tests)
+│   ├── src/
+│   │   ├── index.js      # Core: ARI/Stasis/RTP/Realtime bridge
+│   │   ├── policy.js     # Allowlist, brief normalization, pizza authority
+│   │   ├── realtime.js   # Session/prompt helpers (testable)
+│   │   └── realtime_state.js  # Deterministic response/session/language state
+│   ├── test/             # 12 deterministic tests
+│   ├── scripts/          # Realtime smoke tests
+│   ├── Dockerfile
+│   └── package.json
+├── mcp/                  # HTTP client/server + call watcher for Hermes integration
+├── docker-compose.yml    # Runs companion only (Asterisk is external)
+├── .env.example          # Template for all required env vars
+└── scripts/smoke-test.sh # End-to-end test script
+```
 
-To call Hal directly from the softphone, dial extension `700`.
+## For Hermes users
 
-## OpenClaw Gateway API
+This repo is designed to be consumed as a reusable component. Other Hermes users can:
+
+1. Run their own Asterisk (any way they prefer)
+2. Deploy this companion pointing at their Asterisk via env vars
+3. Integrate via the MCP interface (`mcp/client.py`, `mcp/server.py`)
+
+See `companion/README.md` for full configuration reference and deployment guide.
+
+## Tests
 
 ```bash
-openclaw gateway call asteriskvoice.health --json
-
-openclaw gateway call asteriskvoice.start \
-  --json \
-  --params '{"to":"1001"}'
-
-openclaw gateway call asteriskvoice.end \
-  --json \
-  --params '{"callId":"<call-id>"}'
+docker compose run --rm companion npm test
+# or locally: npm test --prefix companion
 ```
-
-The plugin does not require the old OpenClaw `voice-call` plugin. Realtime sessions go through the OpenClaw Realtime voice provider layer.
-
-## Baseline
-
-- Current plugin source/config snapshot lives in this directory.
-- Sanitized OpenClaw plugin config baseline lives under `openclaw/`.
-- Full local config backups live under `.local-backups/` and are intentionally ignored by git because they may contain secrets.
-
-## Safety
-
-This is intentionally local/LAN-only. Do not add CheapConnect/PSTN until outbound confirmation, allowlists, spend caps, and destination blocking are implemented.

@@ -1,28 +1,9 @@
 services:
-  asterisk:
-    image: andrius/asterisk:latest
-    container_name: asterisk-openclaw
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./asterisk/etc/asterisk.conf:/etc/asterisk/asterisk.conf:ro
-      - ./asterisk/etc/ari.conf:/etc/asterisk/ari.conf:ro
-      - ./asterisk/etc/extensions.conf:/etc/asterisk/extensions.conf:ro
-      - ./asterisk/etc/http.conf:/etc/asterisk/http.conf:ro
-      - ./asterisk/etc/logger.conf:/etc/asterisk/logger.conf:ro
-      - ./asterisk/etc/modules.conf:/etc/asterisk/modules.conf:ro
-      - ./asterisk/etc/pjsip.conf:/etc/asterisk/pjsip.conf:ro
-      - ./asterisk/etc/rtp.conf:/etc/asterisk/rtp.conf:ro
-      - ./asterisk/sounds/custom:/var/lib/asterisk/sounds/custom:ro
-      - ./recordings:/var/spool/asterisk/recording
-
   companion:
     build:
       context: ./companion
     container_name: asterisk-hermes-companion
     restart: unless-stopped
-    depends_on:
-      - asterisk
     network_mode: host
     env_file:
       - ./.env
