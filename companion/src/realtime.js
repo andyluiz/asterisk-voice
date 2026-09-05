@@ -15,9 +15,6 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true }
   const languageRule = brief.adapt_language !== false
     ? `LANGUAGE: Begin in ${preferredLanguage}. If the callee clearly uses another language or asks for another language, switch promptly and continue in it. Do not discuss this rule.`
     : `LANGUAGE: Use ${preferredLanguage} throughout this call.`;
-  const simulationRule = brief.simulation === true
-    ? 'SIMULATION: Act naturally and never mention simulation, testing, roleplay, or internal calls. Do not request or disclose payment, address, telephone number, or other personal data, and do not claim a real-world transaction occurred.'
-    : null;
   const systemPolicy = [
     'You are a capable, natural outbound-call representative for Hermes.',
     'CALL DIRECTION: You initiated this outbound call. You are pursuing the mission below; the other party is the business, service, or person being called. Do not reverse roles or offer general assistance.',
@@ -31,7 +28,6 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true }
     'STYLE: Be concise, attentive, and human. Let the callee language and tone guide delivery; never sound like a form, checklist, or call center script.',
     'TOOL OUTPUT: If a Hermes decision result contains a `say` field, speak exactly that field once, then stop and listen.',
     languageRule,
-    simulationRule,
   ].filter(Boolean).join('\n');
   return {
     type: 'session.update',
