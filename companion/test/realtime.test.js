@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  readRealtimeAudioDelta,
+} from '../src/realtime_events.js';
+import {
   createRtpPacingMetrics,
 } from '../src/pacing_metrics.js';
 import {
@@ -26,6 +29,13 @@ const config = {
   realtimeIntroduction: DEFAULT_REALTIME_INTRODUCTION,
   transcriptionModel: 'gpt-4o-mini-transcribe',
 };
+
+test('accepts only typed Realtime audio deltas and never packetizes transcript text', () => {
+  assert.equal(readRealtimeAudioDelta({ type: 'response.output_audio.delta', delta: 'AQID' }), 'AQID');
+  assert.equal(readRealtimeAudioDelta({ type: 'response.audio.delta', delta: 'BAUG' }), 'BAUG');
+  assert.equal(readRealtimeAudioDelta({ type: 'response.output_audio_transcript.delta', delta: 'Olá, isso é texto.' }), null);
+  assert.equal(readRealtimeAudioDelta({ type: 'response.output_text.delta', delta: 'base64-looking-text' }), null);
+});
 
 test('RTP pacing metrics expose model-delta gaps and burst depth without treating trailing silence as underflow', () => {
   const metrics = createRtpPacingMetrics();

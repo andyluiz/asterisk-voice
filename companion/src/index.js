@@ -8,6 +8,7 @@ import { appendFileSync, chownSync, existsSync, mkdirSync, readFileSync } from '
 import path from 'node:path';
 import { createPreparedCall, requireApprovedStart, validateLocalEndpoint } from './policy.js';
 import { createRtpPacingMetrics } from './pacing_metrics.js';
+import { readRealtimeAudioDelta } from './realtime_events.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -677,14 +678,6 @@ function buildConversationResponse() {
   return { type: 'response.create', response: { output_modalities: ['audio'] } };
 }
 
-function readRealtimeAudioDelta(event) {
-  return event.delta
-    ?? event.audio
-    ?? event.item?.content?.delta
-    ?? event.response?.audio?.delta
-    ?? null;
-}
-
 function readRealtimeTranscript(event) {
   return event.transcript
     ?? event.text
@@ -1090,7 +1083,7 @@ async function startRealtimeBridge(call, channelId) {
           return;
         }
         const audioDelta = readRealtimeAudioDelta(msg);
-        if ((msg.type === 'response.audio.delta' || msg.type === 'response.output_audio.delta' || audioDelta) && audioDelta) {
+        if (audioDelta) {
           if (!responseState.outputAudioStarted) markOutputAudioStarted(responseState);
           const buf = Buffer.from(audioDelta, 'base64');
           pacingMetrics.observeRealtimeAudioDelta({
