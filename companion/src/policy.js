@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { normalizePizzaOrder } from './realtime.js';
 
 function localExtension(value) {
   const raw = String(value ?? '').trim();
@@ -37,24 +36,12 @@ function normalizeBrief(value) {
     if (typeof value[key] !== 'string') throw new Error(`Call brief field ${key} must be a string`);
     return value[key].trim().slice(0, limit) || null;
   };
-  const allowedActions = value.allowed_actions == null ? [] : value.allowed_actions;
-  if (!Array.isArray(allowedActions) || !allowedActions.every((item) => typeof item === 'string')) {
-    throw new Error('Call brief allowed_actions must be an array of strings');
-  }
-  const task = text('task', 120);
-  const pizzaOrder = normalizePizzaOrder(value.pizza_order, task);
+  const mission = text('mission', 4000);
   return Object.freeze({
-    task,
+    mission,
     simulation: value.simulation === true,
-    introduction: text('introduction', 800),
-    order_name: text('order_name', 80),
-    objective: text('objective'),
     preferred_language: text('preferred_language', 48),
     adapt_language: value.adapt_language !== false,
-    constraints: text('constraints', 2000),
-    allowed_actions: Object.freeze(allowedActions.map((item) => item.trim()).filter(Boolean).slice(0, 16)),
-    requires_final_confirmation: value.requires_final_confirmation !== false,
-    ...(pizzaOrder ? { pizza_order: pizzaOrder } : {}),
   });
 }
 

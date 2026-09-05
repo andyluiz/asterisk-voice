@@ -46,8 +46,9 @@ def companion_health() -> dict:
 def prepare_local_call(to: str, purpose: str, brief: dict | None = None) -> dict:
     """Prepare an allowlisted internal call with an immutable, bounded task brief.
 
-    The brief may define task, introduction, objective, constraints,
-    allowed_actions, and requires_final_confirmation. It grants no tools.
+    The brief accepts a trusted free-text `mission`, plus optional `simulation`,
+    `preferred_language`, and `adapt_language`. The mission is injected into the
+    Realtime session as immutable task context; it grants no tools.
     """
     return companion().prepare_call(to=to, purpose=purpose, brief=brief)
 

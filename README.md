@@ -25,7 +25,7 @@ curl -H "Authorization: Bearer $COMPANION_TOKEN" http://localhost:8091/health
 ├── companion/           # The companion service (Docker image, source, tests)
 │   ├── src/
 │   │   ├── index.js      # Core: ARI/Stasis/RTP/Realtime bridge
-│   │   ├── policy.js     # Allowlist, brief normalization, pizza authority
+│   │   ├── policy.js     # Allowlist and immutable mission normalization
 │   │   ├── realtime.js   # Session/prompt helpers (testable)
 │   │   └── realtime_state.js  # Deterministic response/session/language state
 │   ├── test/             # 12 deterministic tests

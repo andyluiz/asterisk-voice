@@ -15,77 +15,29 @@ test('accepts explicitly allowlisted local extensions only', () => {
   );
 });
 
-test('stores a bounded immutable outbound task brief', () => {
+test('stores one bounded immutable generic mission and discards task-specific fields', () => {
   const call = createPreparedCall({
     callId: 'brief-1',
     to: '1001',
     purpose: 'restaurant test',
     brief: {
-      task: 'restaurant_reservation',
+      mission: 'Ask whether a table for three is available on Saturday between 19:00 and 20:00. Do not make a booking, disclose data, or accept fees without a Hermes decision.',
       simulation: false,
-      introduction: 'Olá, sou o Hal, assistente do Anderson.',
-      objective: 'Consultar disponibilidade para três pessoas.',
       preferred_language: 'pt-BR',
       adapt_language: true,
-      constraints: 'Não confirmar sem aprovação final.',
-      allowed_actions: ['ask_availability', 'record_offer'],
-      requires_final_confirmation: true,
+      pizza_order: { quantity: 99 },
       untrusted_extra: 'must not be retained',
     },
   }, new Set(['1001']));
   assert.deepEqual(call.brief, {
-    task: 'restaurant_reservation',
+    mission: 'Ask whether a table for three is available on Saturday between 19:00 and 20:00. Do not make a booking, disclose data, or accept fees without a Hermes decision.',
     simulation: false,
-    introduction: 'Olá, sou o Hal, assistente do Anderson.',
-    order_name: null,
-    objective: 'Consultar disponibilidade para três pessoas.',
     preferred_language: 'pt-BR',
     adapt_language: true,
-    constraints: 'Não confirmar sem aprovação final.',
-    allowed_actions: ['ask_availability', 'record_offer'],
-    requires_final_confirmation: true,
   });
   assert.throws(
-    () => createPreparedCall({ to: '1001', purpose: 'bad brief', brief: { allowed_actions: 'book' } }, new Set(['1001'])),
-    /allowed_actions/,
-  );
-});
-
-test('normalizes structured pizza-order authority and rejects invalid changes', () => {
-  const call = createPreparedCall({
-    callId: 'pizza-1',
-    to: '1001',
-    purpose: 'pizza test',
-    brief: {
-      task: 'pizza_order',
-      simulation: true,
-      preferred_language: 'nl-NL',
-      pizza_order: {
-        quantity: 1,
-        size: 'large',
-        toppings: ['chicken', 'red onion'],
-        excluded_toppings: ['mushrooms'],
-        allowed_ingredient_changes: [{ type: 'replace', from: 'bell pepper', to: 'extra red onion' }],
-      },
-    },
-  }, new Set(['1001']));
-  assert.deepEqual(call.brief.pizza_order, {
-    quantity: 1,
-    size: 'large',
-    style: null,
-    sauce: null,
-    cheese: null,
-    toppings: ['chicken', 'red onion'],
-    excluded_toppings: ['mushrooms'],
-    allowed_ingredient_changes: [{ type: 'replace', from: 'bell pepper', to: 'extra red onion' }],
-  });
-  assert.throws(
-    () => createPreparedCall({
-      to: '1001',
-      purpose: 'bad pizza',
-      brief: { task: 'pizza_order', pizza_order: { allowed_ingredient_changes: [{ type: 'replace', from: 'a' }] } },
-    }, new Set(['1001'])),
-    /replace changes require both from and to/,
+    () => createPreparedCall({ to: '1001', purpose: 'bad brief', brief: { mission: 42 } }, new Set(['1001'])),
+    /mission must be a string/,
   );
 });
 
