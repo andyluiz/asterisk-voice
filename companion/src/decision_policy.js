@@ -7,3 +7,7 @@ export function decisionCompletionPlan(response) {
   }
   return { say: String(response?.say ?? '').trim(), endAfterResponse: false };
 }
+
+export function shouldGenerateEndCallRejection(callbackPending) {
+  return !callbackPending;
+}

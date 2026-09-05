@@ -9,7 +9,7 @@ import path from 'node:path';
 import { createPreparedCall, requireApprovedStart, validateLocalEndpoint } from './policy.js';
 import { createRtpPacingMetrics } from './pacing_metrics.js';
 import { readRealtimeAudioDelta } from './realtime_events.js';
-import { decisionCompletionPlan } from './decision_policy.js';
+import { decisionCompletionPlan, shouldGenerateEndCallRejection } from './decision_policy.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -1189,6 +1189,7 @@ async function startRealtimeBridge(call, channelId) {
             return;
           } else if (!call.calleeExplicitHangup) {
             emitCallEvent('call.control.rejected', callId, { action: 'end_call', reason: 'callee-has-not-explicitly-requested-hangup' });
+            if (!shouldGenerateEndCallRejection(call.decisionCallbackPending)) return;
             wsClient.send(JSON.stringify({
               type: 'conversation.item.create',
               item: {

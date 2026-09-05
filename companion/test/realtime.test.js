@@ -5,6 +5,7 @@ import {
 } from '../src/realtime_events.js';
 import {
   decisionCompletionPlan,
+  shouldGenerateEndCallRejection,
 } from '../src/decision_policy.js';
 import {
   createRtpPacingMetrics,
@@ -42,6 +43,8 @@ test('decision callback ends the call after one fixed callback notice', () => {
     say: 'Não consigo confirmar agora. Vou ligar novamente assim que tiver a resposta. Obrigado.',
     endAfterResponse: true,
   });
+  assert.equal(shouldGenerateEndCallRejection(false), true);
+  assert.equal(shouldGenerateEndCallRejection(true), false);
 });
 
 test('accepts only typed Realtime audio deltas and never packetizes transcript text', () => {
