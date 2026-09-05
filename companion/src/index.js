@@ -3,9 +3,11 @@ import { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 import dgram from 'node:dgram';
 import os from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { appendFileSync, chownSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createPreparedCall, requireApprovedStart, validateLocalEndpoint } from './policy.js';
+import { createRtpPacingMetrics } from './pacing_metrics.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -741,8 +743,10 @@ async function startRealtimeBridge(call, channelId) {
   const outboundRtpQueue = [];
   let outboundRtpTimer = null;
   let nextRtpDueAt = null;
-  let outboundLateFrames = 0;
-  let outboundMaxPacingLatenessMs = 0;
+  const pacingMetrics = createRtpPacingMetrics();
+  const eventLoopDelay = monitorEventLoopDelay({ resolution: 1 });
+  eventLoopDelay.enable();
+  let modelAudioActive = false;
   let deferredEnd = null;
   let cleaned = false;
 
@@ -771,8 +775,11 @@ async function startRealtimeBridge(call, channelId) {
       if (cleaned) return;
       const sentAt = performance.now();
       const latenessMs = Math.max(0, sentAt - nextRtpDueAt);
-      outboundMaxPacingLatenessMs = Math.max(outboundMaxPacingLatenessMs, latenessMs);
-      if (latenessMs > 5) outboundLateFrames += 1;
+      pacingMetrics.observePacerTick({
+        latenessMs,
+        modelAudioActive,
+        queuedAudioFrames: outboundRtpQueue.length,
+      });
       let payload = outboundRtpQueue.shift() ?? rtpSilenceFrame;
       if (payload === rtpSilenceFrame) {
         outboundSilenceFrames += 1;
@@ -791,7 +798,9 @@ async function startRealtimeBridge(call, channelId) {
         ssrc: outboundSsrc,
         payloadType: outboundPayloadType,
       });
+      const udpSendStartedAt = performance.now();
       udpSocket.send(packet, asteriskRemotePort, asteriskRemoteAddress, () => {
+        pacingMetrics.observeUdpSendCallback(performance.now() - udpSendStartedAt);
         maybeFinishDeferredEnd();
       });
       outboundSequenceNumber = (outboundSequenceNumber + 1) & 0xffff;
@@ -836,6 +845,7 @@ async function startRealtimeBridge(call, channelId) {
       const last = outboundRtpQueue.length - 1;
       outboundRtpQueue[last] = fadeMuLawFrame(outboundRtpQueue[last], 'out');
     }
+    pacingMetrics.observeQueueDepth(outboundRtpQueue.length);
     scheduleRtpPump();
   }
 
@@ -962,6 +972,7 @@ async function startRealtimeBridge(call, channelId) {
         await ariRequest(`/bridges/${encodeURIComponent(bridgeId)}`, { method: 'DELETE' });
       }
     } catch {}
+    eventLoopDelay.disable();
     call.realtimeStats = {
       inboundRtpPackets,
       inboundAudioBytes,
@@ -969,10 +980,7 @@ async function startRealtimeBridge(call, channelId) {
       outboundAudioBytes,
       outboundSilenceFrames,
       outboundFadeIns,
-      pacing: {
-        lateFramesOver5ms: outboundLateFrames,
-        maxLatenessMs: Number(outboundMaxPacingLatenessMs.toFixed(3)),
-      },
+      ...pacingMetrics.snapshot(eventLoopDelay),
     };
     call.status = 'ended';
     emitCallEvent('call.ended', callId, {
@@ -1088,10 +1096,12 @@ async function startRealtimeBridge(call, channelId) {
         }
         const audioDelta = readRealtimeAudioDelta(msg);
         if ((msg.type === 'response.audio.delta' || msg.type === 'response.output_audio.delta' || audioDelta) && audioDelta) {
+          modelAudioActive = true;
           if (!responseState.outputAudioStarted) markOutputAudioStarted(responseState);
           const buf = Buffer.from(audioDelta, 'base64');
           queueAudioToAsterisk(buf);
         } else if (msg.type === 'response.audio.done' || msg.type === 'response.output_audio.done') {
+          modelAudioActive = false;
           queueAudioToAsterisk(Buffer.alloc(0), true);
         } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
           const transcript = readRealtimeTranscript(msg);
@@ -1148,6 +1158,7 @@ async function startRealtimeBridge(call, channelId) {
         } else if (msg.type === 'input_audio_buffer.speech_started') {
           // The Realtime server cancels its current response on barge-in, but it
           // cannot retract frames already queued locally for RTP pacing.
+          modelAudioActive = false;
           clearQueuedAudio('caller speech started');
           emitCallEvent('call.speech.started', callId, { channelId });
         } else if (msg.type === 'input_audio_buffer.speech_stopped') {

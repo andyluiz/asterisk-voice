@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createRtpPacingMetrics,
+} from '../src/pacing_metrics.js';
+import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
   buildRealtimeSessionUpdate,
@@ -23,6 +26,22 @@ const config = {
   realtimeIntroduction: DEFAULT_REALTIME_INTRODUCTION,
   transcriptionModel: 'gpt-4o-mini-transcribe',
 };
+
+test('RTP pacing metrics distinguish event-loop lateness, queue underflow, and UDP callback delay', () => {
+  const metrics = createRtpPacingMetrics();
+  metrics.observeQueueDepth(7);
+  metrics.observePacerTick({ latenessMs: 6.25, modelAudioActive: true, queuedAudioFrames: 0 });
+  metrics.observePacerTick({ latenessMs: 1.5, modelAudioActive: false, queuedAudioFrames: 0 });
+  metrics.observeUdpSendCallback(3.4);
+  const snapshot = metrics.snapshot({ min: 1_000_000, mean: 2_000_000, max: 8_000_000, percentile: () => 6_000_000 });
+  assert.deepEqual(snapshot, {
+    queueHighWaterFrames: 7,
+    modelAudioUnderflowFrames: 1,
+    pacing: { lateFramesOver5ms: 1, maxLatenessMs: 6.25 },
+    udpSendCallback: { maxDelayMs: 3.4 },
+    eventLoopDelay: { minMs: 1, meanMs: 2, maxMs: 8, p99Ms: 6 },
+  });
+});
 
 test('session.created -> session.update -> session.updated gates queued responses', () => {
   const state = createRealtimeResponseState(() => 'sync-1');
