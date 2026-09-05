@@ -9,6 +9,7 @@ import path from 'node:path';
 import { createPreparedCall, requireApprovedStart, validateLocalEndpoint } from './policy.js';
 import { createRtpPacingMetrics } from './pacing_metrics.js';
 import { readRealtimeAudioDelta } from './realtime_events.js';
+import { decisionCompletionPlan } from './decision_policy.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -841,10 +842,15 @@ async function startRealtimeBridge(call, channelId) {
     return requestAudioResponseWithOptions(response, reason, { queueIfBlocked: false });
   }
 
+  function markDecisionResultSent() {
+    call.decisionResolving = true;
+    if (call.decisionCallbackPending) armDeferredEnd('hermes-decision-callback');
+  }
+
   function sendQueuedResponse(request) {
     if (!request || !wsClient || wsClient.readyState !== WebSocket.OPEN) return false;
     call.activeResponseReason = request.reason;
-    if (request.reason === 'decision-result') call.decisionResolving = true;
+    if (request.reason === 'decision-result') markDecisionResultSent();
     wsClient.send(JSON.stringify(request.response));
     emitCallEvent('call.response.sent', callId, { reason: request.reason });
     return true;
@@ -873,7 +879,7 @@ async function startRealtimeBridge(call, channelId) {
       return false;
     }
     call.activeResponseReason = reason;
-    if (reason === 'decision-result') call.decisionResolving = true;
+    if (reason === 'decision-result') markDecisionResultSent();
     wsClient.send(JSON.stringify(outcome.payload.response));
     emitCallEvent('call.response.sent', callId, { reason });
     return true;
@@ -1124,10 +1130,9 @@ async function startRealtimeBridge(call, channelId) {
                 requestAudioResponseWithOptions(buildIntroductionResponse(call), 'opening-script', {
                   queueIfBlocked: Boolean(responseState.pendingLanguageSync),
                 });
-              } else if (call.pendingDecision || call.decisionResolving) {
-                // Record what the caller says while Hermes is deciding, but never start a competing
-                // Realtime response. Competing responses caused repeated “checking” speech and could
-                // prevent the timeout/callback response from being heard.
+              } else if (call.pendingDecision || call.decisionResolving || call.decisionCallbackPending) {
+                // Record speech but do not create a response while an agent decision is pending,
+                // resolving, or concluding via callback. The callback response is terminal.
                 emitCallEvent('call.decision.waiting_caller_speech', callId, { transcript });
               } else {
                 requestAudioResponseWithOptions(buildConversationResponse(call), 'caller-transcript', {
@@ -1171,7 +1176,10 @@ async function startRealtimeBridge(call, channelId) {
                 call.pendingDecision = null;
                 emitCallEvent('call.decision.timed_out', callId, { decisionId: decision.id, timeoutSeconds: 20 });
               }
-              wsClient.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: msg.call_id, output: JSON.stringify(response) } }));
+              const completion = decisionCompletionPlan(response);
+              if (completion.endAfterResponse) call.decisionCallbackPending = true;
+              const toolOutput = { ...response, say: completion.say };
+              wsClient.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: msg.call_id, output: JSON.stringify(toolOutput) } }));
               requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, 'decision-result', { queueIfBlocked: true });
             } catch (error) {
               emitCallEvent('call.decision.rejected', callId, { error: error.message });
@@ -1204,7 +1212,7 @@ async function startRealtimeBridge(call, channelId) {
             call.decisionResolving = false;
             emitCallEvent('call.decision.response_completed', callId, {});
           }
-          if (deferredEnd) {
+          if (deferredEnd && (deferredEnd.reason !== 'hermes-decision-callback' || finishedReason === 'decision-result')) {
             deferredEnd.responseDone = true;
             emitCallEvent('call.control.end_response_completed', callId, { reason: deferredEnd.reason });
             maybeFinishDeferredEnd();

@@ -4,6 +4,9 @@ import {
   readRealtimeAudioDelta,
 } from '../src/realtime_events.js';
 import {
+  decisionCompletionPlan,
+} from '../src/decision_policy.js';
+import {
   createRtpPacingMetrics,
 } from '../src/pacing_metrics.js';
 import {
@@ -29,6 +32,17 @@ const config = {
   realtimeIntroduction: DEFAULT_REALTIME_INTRODUCTION,
   transcriptionModel: 'gpt-4o-mini-transcribe',
 };
+
+test('decision callback ends the call after one fixed callback notice', () => {
+  assert.deepEqual(decisionCompletionPlan({ decision: 'accept', say: 'Please confirm.' }), {
+    say: 'Please confirm.',
+    endAfterResponse: false,
+  });
+  assert.deepEqual(decisionCompletionPlan({ decision: 'callback', say: 'ignored' }), {
+    say: 'Não consigo confirmar agora. Vou ligar novamente assim que tiver a resposta. Obrigado.',
+    endAfterResponse: true,
+  });
+});
 
 test('accepts only typed Realtime audio deltas and never packetizes transcript text', () => {
   assert.equal(readRealtimeAudioDelta({ type: 'response.output_audio.delta', delta: 'AQID' }), 'AQID');
