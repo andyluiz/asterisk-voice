@@ -27,18 +27,26 @@ const config = {
   transcriptionModel: 'gpt-4o-mini-transcribe',
 };
 
-test('RTP pacing metrics distinguish event-loop lateness, queue underflow, and UDP callback delay', () => {
+test('RTP pacing metrics expose model-delta gaps and burst depth without treating trailing silence as underflow', () => {
   const metrics = createRtpPacingMetrics();
   metrics.observeQueueDepth(7);
-  metrics.observePacerTick({ latenessMs: 6.25, modelAudioActive: true, queuedAudioFrames: 0 });
-  metrics.observePacerTick({ latenessMs: 1.5, modelAudioActive: false, queuedAudioFrames: 0 });
+  metrics.observeRealtimeAudioDelta({ atMs: 100, bytes: 320, queueDepthBefore: 1 });
+  metrics.observeRealtimeAudioDelta({ atMs: 245, bytes: 800, queueDepthBefore: 7 });
+  metrics.observePacerTick({ latenessMs: 6.25 });
   metrics.observeUdpSendCallback(3.4);
   const snapshot = metrics.snapshot({ min: 1_000_000, mean: 2_000_000, max: 8_000_000, percentile: () => 6_000_000 });
   assert.deepEqual(snapshot, {
     queueHighWaterFrames: 7,
-    modelAudioUnderflowFrames: 1,
     pacing: { lateFramesOver5ms: 1, maxLatenessMs: 6.25 },
     udpSendCallback: { maxDelayMs: 3.4 },
+    realtimeAudio: {
+      deltaCount: 2,
+      totalBytes: 1120,
+      maxInterDeltaMs: 145,
+      gapsOver100ms: 1,
+      maxBurstFrames: 5,
+      maxQueueDepthBeforeDeltaFrames: 7,
+    },
     eventLoopDelay: { minMs: 1, meanMs: 2, maxMs: 8, p99Ms: 6 },
   });
 });
