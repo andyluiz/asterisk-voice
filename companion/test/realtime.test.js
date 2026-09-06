@@ -182,6 +182,8 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /When clear facts satisfy every stated mission limit, proceed/);
   assert.match(instructions, /Ask the callee one short factual question only when a required condition is missing or unclear/);
   assert.match(instructions, /do not accept a time, date, or booking without mission authority/);
+  assert.match(instructions, /Do not reveal private mission constraints such as maximum prices, deadlines, budgets, or fallback options/);
+  assert.match(instructions, /When a proposed term is authorized, respond only with a brief acceptance or decline; never explain the private constraint/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);
   assert.equal(update.session.audio.output.voice, 'ash');
