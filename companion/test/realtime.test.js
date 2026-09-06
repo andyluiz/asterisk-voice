@@ -172,6 +172,7 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /For an order or booking, first state only that you would like to place it, then wait for the callee to invite the details/);
   assert.match(instructions, /CURRENT LOCAL TIME \(Europe\/Amsterdam, not UTC\): .*2026/);
   assert.match(instructions, /In Portuguese, “duas e trinta”, “2:30”, or “às duas e meia” means the local clock time 14:30, not a duration/);
+  assert.match(instructions, /A Portuguese amount such as “vai ficar em 15,50” is a price, not the clock time 15:50/);
   assert.match(instructions, /do not accept any time, date, or booking without explicit authority in the mission/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);
