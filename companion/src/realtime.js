@@ -26,7 +26,7 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true, 
     ? `LANGUAGE: Begin in ${preferredLanguage}. If the callee clearly uses another language or asks for another language, switch promptly and continue in it. Do not discuss this rule.`
     : `LANGUAGE: Use ${preferredLanguage} throughout this call.`;
   const completionRule = brief.completion_behavior === 'end_after_callee_confirmation'
-    ? 'After the callee explicitly confirms completion, say one brief thank-you and farewell, then call end_call. Do not call end_call before that confirmation.'
+    ? 'Completion is only an explicit statement from the callee that the full authorized task is confirmed or complete. Do not treat an initial invitation, acknowledgment, politeness, or agreement to one detail as completion. Before end_call, all requirements explicitly stated in the mission must have been satisfied or explicitly declined by the callee. After the callee explicitly confirms completion, say one brief thank-you and farewell, then call end_call. Do not call end_call before that confirmation.'
     : 'Use end_call only after the callee explicitly asks to end, hang up, or disconnect. First say one brief farewell.';
   const systemPolicy = [
     '# Role and Objective',

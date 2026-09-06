@@ -197,6 +197,8 @@ test('completion behavior authorizes a farewell and hangup only after callee con
     activeLanguage: 'pt-BR',
     brief: { mission: 'Complete the authorized task.', completion_behavior: 'end_after_callee_confirmation' },
   }, config);
+  assert.match(update.session.instructions, /Do not treat an initial invitation, acknowledgment, politeness, or agreement to one detail as completion/);
+  assert.match(update.session.instructions, /Before end_call, all requirements explicitly stated in the mission must have been satisfied or explicitly declined by the callee/);
   assert.match(update.session.instructions, /After the callee explicitly confirms completion, say one brief thank-you and farewell, then call end_call/);
 });
 
