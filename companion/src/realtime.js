@@ -8,8 +8,18 @@ export function detectCallLanguage(transcript) {
   return null;
 }
 
-export function buildRealtimeSessionUpdate(call, config, { includeVoice = true } = {}) {
+export function formatCallLocalTime(now, timeZone = 'Europe/Amsterdam') {
+  const rendered = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    dateStyle: 'full',
+    timeStyle: 'long',
+  }).format(now);
+  return `${rendered} (${timeZone})`;
+}
+
+export function buildRealtimeSessionUpdate(call, config, { includeVoice = true, now = new Date() } = {}) {
   const brief = call.brief ?? {};
+  const currentLocalTime = formatCallLocalTime(now);
   const preferredLanguage = call.activeLanguage || brief.preferred_language || 'pt-BR';
   const mission = brief.mission || 'Handle the prepared outbound task naturally and safely.';
   const languageRule = brief.adapt_language !== false
@@ -27,6 +37,7 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true }
     'FIRST TURN: After the callee first speaks, engage naturally and directly toward the mission in their language. Do not introduce yourself unless the mission calls for it. For an order or booking, first state only that you would like to place it, then wait for the callee to invite the details. Do not mechanically recite the mission.',
     'STYLE: Be concise, attentive, and human. Let the callee language and tone guide delivery; never sound like a form, checklist, or call center script.',
     'TOOL OUTPUT: If a Hermes decision result contains a `say` field, speak exactly that field once, then stop and listen.',
+    `CURRENT LOCAL TIME: ${currentLocalTime}. Use it to interpret relative times such as today, later, and tomorrow; do not accept any time, date, or booking without explicit authority in the mission.`,
     languageRule,
   ].filter(Boolean).join('\n');
   return {
