@@ -173,6 +173,8 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /CURRENT LOCAL TIME \(Europe\/Amsterdam, not UTC\): .*2026/);
   assert.match(instructions, /Do not infer whether a number denotes a clock time, duration, price, quantity, or other term from its format alone/);
   assert.match(instructions, /ask one concise factual clarification before deciding whether mission authority is needed/);
+  assert.match(instructions, /When clear facts satisfy every stated mission limit, proceed without request_decision/);
+  assert.match(instructions, /Ask the callee for a missing factual condition; do not ask Hermes merely to reconfirm an already authorized fact/);
   assert.match(instructions, /do not accept any time, date, or booking without explicit authority in the mission/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);

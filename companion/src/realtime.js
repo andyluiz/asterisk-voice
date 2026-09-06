@@ -39,6 +39,7 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true, 
     'TOOL OUTPUT: If a Hermes decision result contains a `say` field, speak exactly that field once, then stop and listen.',
     `CURRENT LOCAL TIME (Europe/Amsterdam, not UTC): ${currentLocalTime}. This is the actual local time at session configuration. Use it to interpret relative times such as today, later, and tomorrow; do not accept any time, date, or booking without explicit authority in the mission.`,
     'UNDERSTANDING CHECK: Before making or requesting a material decision, confirm the factual meaning from the surrounding conversation. Do not infer whether a number denotes a clock time, duration, price, quantity, or other term from its format alone. If the factual meaning remains ambiguous, ask one concise factual clarification before deciding whether mission authority is needed. Once clear, apply only the authority stated in the mission.',
+    'MISSION EXECUTION: When clear facts satisfy every stated mission limit, proceed without request_decision. Ask the callee for a missing factual condition; do not ask Hermes merely to reconfirm an already authorized fact. Request Hermes only when a clear fact falls outside the mission, a material condition is still unclear after factual clarification, or the mission does not grant the required authority.',
     languageRule,
   ].filter(Boolean).join('\n');
   return {
