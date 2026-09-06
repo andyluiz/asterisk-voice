@@ -184,6 +184,9 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /do not accept a time, date, or booking without mission authority/);
   assert.match(instructions, /Do not reveal private mission constraints such as maximum prices, deadlines, budgets, or fallback options/);
   assert.match(instructions, /When a proposed term is authorized, respond only with a brief acceptance or decline; never explain the private constraint/);
+  assert.match(instructions, /Once the callee invites a mission-authorized detail, state that detail directly; do not ask for generic details already supplied by the mission/);
+  assert.match(instructions, /When asked for one authorized datum, say only that datum/);
+  assert.match(instructions, /Never announce what you are about to say or do/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);
   assert.equal(update.session.audio.output.voice, 'ash');
