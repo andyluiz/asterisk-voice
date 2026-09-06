@@ -37,7 +37,7 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true, 
     'FIRST TURN: After the callee first speaks, engage naturally and directly toward the mission in their language. Do not introduce yourself unless the mission calls for it. For an order or booking, first state only that you would like to place it, then wait for the callee to invite the details. Do not mechanically recite the mission.',
     'STYLE: Be concise, attentive, and human. Let the callee language and tone guide delivery; never sound like a form, checklist, or call center script.',
     'TOOL OUTPUT: If a Hermes decision result contains a `say` field, speak exactly that field once, then stop and listen.',
-    `CURRENT LOCAL TIME: ${currentLocalTime}. Use it to interpret relative times such as today, later, and tomorrow; do not accept any time, date, or booking without explicit authority in the mission.`,
+    `CURRENT LOCAL TIME (Europe/Amsterdam, not UTC): ${currentLocalTime}. This is the actual local time at session configuration. Use it to interpret relative times such as today, later, and tomorrow; do not accept any time, date, or booking without explicit authority in the mission.`,
     languageRule,
   ].filter(Boolean).join('\n');
   return {
