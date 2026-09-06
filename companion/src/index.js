@@ -1161,11 +1161,16 @@ async function startRealtimeBridge(call, channelId) {
         } else if (msg.type === 'response.function_call_arguments.done') {
           let arguments_ = {};
           try { arguments_ = JSON.parse(msg.arguments ?? '{}'); } catch {}
-          if (msg.name === 'request_decision') {
+          if (msg.name === 'request_decision' || msg.name === 'request_hermes') {
             try {
-              const decision = createPendingDecision(call, arguments_);
-              // Session instructions require one short hold notice before waiting for Hermes.
-              requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, 'decision-wait-notice', { queueIfBlocked: true });
+              if (msg.name === 'request_hermes' && call.brief?.interaction_mode !== 'hermes_voice') {
+                throw new Error('request_hermes is available only in Hermes Voice mode');
+              }
+              const decision = createPendingDecision(call, msg.name === 'request_hermes'
+                ? { kind: 'voice_handoff', candidate: {}, question: arguments_.question }
+                : arguments_);
+              // The voice model has already spoken its short wait notice before this tool call.
+              requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, msg.name === 'request_hermes' ? 'hermes-voice-wait-notice' : 'decision-wait-notice', { queueIfBlocked: true });
               const response = await new Promise((resolve) => {
                 decision.resolve = resolve;
                 decision.timer = setTimeout(() => resolve({ decision: 'callback', say: 'Preciso confirmar esse detalhe com Anderson e retorno em breve.' }), 20_000);

@@ -192,6 +192,23 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.deepEqual(update.session.reasoning, { effort: 'low' });
 });
 
+test('hermes voice mode uses a curated context and exposes a narrow Hermes handoff', () => {
+  const update = buildRealtimeSessionUpdate({
+    activeLanguage: 'pt-BR',
+    brief: {
+      interaction_mode: 'hermes_voice',
+      voice_context: 'Anderson prefers concise Portuguese replies.',
+      mission: 'Have a natural voice conversation with Anderson.',
+    },
+  }, config);
+  assert.match(update.session.instructions, /# Hermes Voice Mode/);
+  assert.match(update.session.instructions, /Anderson prefers concise Portuguese replies/);
+  assert.match(update.session.instructions, /Handle greetings, short conversational replies, repetition, clarification, acknowledgement, and facts explicitly present in the voice context directly/);
+  assert.match(update.session.instructions, /For research, tools, current information, private records, decisions, or external actions, call request_hermes/);
+  assert.ok(update.session.tools.some((tool) => tool.name === 'request_hermes'));
+  assert.doesNotMatch(update.session.instructions, /CALL MISSION \(immutable, supplied by Hermes\)/);
+});
+
 test('completion behavior authorizes a farewell and hangup only after callee confirmation', () => {
   const update = buildRealtimeSessionUpdate({
     activeLanguage: 'pt-BR',
