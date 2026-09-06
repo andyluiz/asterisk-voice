@@ -10,6 +10,7 @@ import { createPreparedCall, requireApprovedStart, validateLocalEndpoint } from 
 import { createRtpPacingMetrics } from './pacing_metrics.js';
 import { readRealtimeAudioDelta } from './realtime_events.js';
 import { decisionCompletionPlan, shouldGenerateEndCallRejection } from './decision_policy.js';
+import { handoffPolicy } from './handoff_policy.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -1166,6 +1167,7 @@ async function startRealtimeBridge(call, channelId) {
               if (msg.name === 'request_hermes' && call.brief?.interaction_mode !== 'hermes_voice') {
                 throw new Error('request_hermes is available only in Hermes Voice mode');
               }
+              const policy = handoffPolicy(call.brief?.interaction_mode);
               const decision = createPendingDecision(call, msg.name === 'request_hermes'
                 ? { kind: 'voice_handoff', candidate: {}, question: arguments_.question }
                 : arguments_);
@@ -1173,13 +1175,16 @@ async function startRealtimeBridge(call, channelId) {
               requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, msg.name === 'request_hermes' ? 'hermes-voice-wait-notice' : 'decision-wait-notice', { queueIfBlocked: true });
               const response = await new Promise((resolve) => {
                 decision.resolve = resolve;
-                decision.timer = setTimeout(() => resolve({ decision: 'callback', say: 'Preciso confirmar esse detalhe com Anderson e retorno em breve.' }), 20_000);
+                decision.timer = setTimeout(() => resolve({
+                  decision: policy.endAfterTimeout ? 'callback' : 'decline',
+                  say: policy.timeoutReply,
+                }), policy.timeoutMs);
               });
               clearTimeout(decision.timer);
               if (decision.status === 'pending') {
                 decision.status = 'timed_out';
                 call.pendingDecision = null;
-                emitCallEvent('call.decision.timed_out', callId, { decisionId: decision.id, timeoutSeconds: 20 });
+                emitCallEvent('call.decision.timed_out', callId, { decisionId: decision.id, timeoutSeconds: policy.timeoutMs / 1000 });
               }
               const completion = decisionCompletionPlan(response);
               if (completion.endAfterResponse) call.decisionCallbackPending = true;
