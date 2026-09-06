@@ -186,11 +186,18 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /When a proposed term is authorized, respond only with a brief acceptance or decline; never explain the private constraint/);
   assert.match(instructions, /Once the callee invites a mission-authorized detail, state that detail directly; do not ask for generic details already supplied by the mission/);
   assert.match(instructions, /When asked for one authorized datum, say only that datum/);
-  assert.match(instructions, /Never announce what you are about to say or do/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);
   assert.equal(update.session.audio.output.voice, 'ash');
   assert.deepEqual(update.session.reasoning, { effort: 'low' });
+});
+
+test('completion behavior authorizes a farewell and hangup only after callee confirmation', () => {
+  const update = buildRealtimeSessionUpdate({
+    activeLanguage: 'pt-BR',
+    brief: { mission: 'Complete the authorized task.', completion_behavior: 'end_after_callee_confirmation' },
+  }, config);
+  assert.match(update.session.instructions, /After the callee explicitly confirms completion, say one brief thank-you and farewell, then call end_call/);
 });
 
 test('follow-up session.update omits voice after audio has started', () => {

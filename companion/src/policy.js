@@ -37,11 +37,16 @@ function normalizeBrief(value) {
     return value[key].trim().slice(0, limit) || null;
   };
   const mission = text('mission', 4000);
+  const completionBehavior = value.completion_behavior ?? 'callee_request_only';
+  if (!['callee_request_only', 'end_after_callee_confirmation'].includes(completionBehavior)) {
+    throw new Error('Call brief completion_behavior is invalid');
+  }
   return Object.freeze({
     mission,
     simulation: value.simulation === true,
     preferred_language: text('preferred_language', 48),
     adapt_language: value.adapt_language !== false,
+    completion_behavior: completionBehavior,
   });
 }
 

@@ -25,6 +25,7 @@ test('stores one bounded immutable generic mission and discards task-specific fi
       simulation: false,
       preferred_language: 'pt-BR',
       adapt_language: true,
+      completion_behavior: 'end_after_callee_confirmation',
       pizza_order: { quantity: 99 },
       untrusted_extra: 'must not be retained',
     },
@@ -34,6 +35,7 @@ test('stores one bounded immutable generic mission and discards task-specific fi
     simulation: false,
     preferred_language: 'pt-BR',
     adapt_language: true,
+    completion_behavior: 'end_after_callee_confirmation',
   });
   assert.throws(
     () => createPreparedCall({ to: '1001', purpose: 'bad brief', brief: { mission: 42 } }, new Set(['1001'])),

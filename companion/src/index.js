@@ -1187,7 +1187,7 @@ async function startRealtimeBridge(call, channelId) {
           } else if (msg.name !== 'end_call') {
             emitCallEvent('call.control.rejected', callId, { name: msg.name ?? null, reason: 'tool-not-allowlisted' });
             return;
-          } else if (!call.calleeExplicitHangup) {
+          } else if (!call.calleeExplicitHangup && call.brief?.completion_behavior !== 'end_after_callee_confirmation') {
             emitCallEvent('call.control.rejected', callId, { action: 'end_call', reason: 'callee-has-not-explicitly-requested-hangup' });
             if (!shouldGenerateEndCallRejection(call.decisionCallbackPending)) return;
             wsClient.send(JSON.stringify({
