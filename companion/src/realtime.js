@@ -38,7 +38,7 @@ export function buildRealtimeSessionUpdate(call, config, { includeVoice = true, 
     'STYLE: Be concise, attentive, and human. Let the callee language and tone guide delivery; never sound like a form, checklist, or call center script.',
     'TOOL OUTPUT: If a Hermes decision result contains a `say` field, speak exactly that field once, then stop and listen.',
     `CURRENT LOCAL TIME (Europe/Amsterdam, not UTC): ${currentLocalTime}. This is the actual local time at session configuration. Use it to interpret relative times such as today, later, and tomorrow; do not accept any time, date, or booking without explicit authority in the mission.`,
-    'TIME PARSING: In Portuguese, “duas e trinta”, “2:30”, or “às duas e meia” means the local clock time 14:30, not a duration. A duration is explicit, for example “em duas horas e trinta minutos”. A Portuguese amount such as “vai ficar em 15,50” is a price, not the clock time 15:50; handle it under the mission’s price authority. Compare a clock time today against the current local time and mission constraints.',
+    'UNDERSTANDING CHECK: Before making or requesting a material decision, confirm the factual meaning from the surrounding conversation. Do not infer whether a number denotes a clock time, duration, price, quantity, or other term from its format alone. If the factual meaning remains ambiguous, ask one concise factual clarification before deciding whether mission authority is needed. Once clear, apply only the authority stated in the mission.',
     languageRule,
   ].filter(Boolean).join('\n');
   return {
