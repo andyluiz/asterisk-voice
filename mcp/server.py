@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Trusted stdio MCP facade for the local Asterisk Hermes companion."""
 
+import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from client import CompanionClient
 
-ENV_PATH = Path('/home/anderson/apps/asterisk-voice/.env')
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = Path(os.environ.get('ASTERISK_VOICE_ENV_FILE', PROJECT_ROOT / '.env'))
 
 
 def read_env(path: Path) -> dict[str, str]:

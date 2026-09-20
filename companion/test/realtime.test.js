@@ -209,6 +209,25 @@ test('hermes voice mode uses a curated context and exposes a narrow Hermes hando
   assert.doesNotMatch(update.session.instructions, /CALL MISSION \(immutable, supplied by Hermes\)/);
 });
 
+test('inbound calls use Hermes Voice mode and only expose the Hermes handoff tool', () => {
+  const update = buildRealtimeSessionUpdate({
+    direction: 'inbound',
+    brief: { preferred_language: 'pt-BR' },
+  }, config);
+  const toolNames = update.session.tools.map((tool) => tool.name);
+  assert.match(update.session.instructions, /answering an inbound call/);
+  assert.doesNotMatch(update.session.instructions, /You initiated this outbound call/);
+  assert.deepEqual(toolNames, ['end_call', 'request_hermes']);
+});
+
+test('outbound mission mode exposes bounded decisions instead of Hermes Voice handoff', () => {
+  const update = buildRealtimeSessionUpdate({
+    brief: { mission: 'Complete the prepared task.' },
+  }, config);
+  const toolNames = update.session.tools.map((tool) => tool.name);
+  assert.deepEqual(toolNames, ['end_call', 'request_decision']);
+});
+
 test('completion behavior authorizes a farewell and hangup only after callee confirmation', () => {
   const update = buildRealtimeSessionUpdate({
     activeLanguage: 'pt-BR',

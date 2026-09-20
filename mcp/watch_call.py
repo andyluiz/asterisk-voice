@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -11,8 +12,9 @@ from pathlib import Path
 from client import CompanionClient
 from server import read_env
 
-ENV_PATH = Path('/home/anderson/apps/asterisk-voice/.env')
-RECORDINGS_DIR = Path('/home/anderson/apps/asterisk-voice/recordings')
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = Path(os.environ.get('ASTERISK_VOICE_ENV_FILE', PROJECT_ROOT / '.env'))
+RECORDINGS_DIR = Path(os.environ.get('ASTERISK_VOICE_RECORDINGS_DIR', PROJECT_ROOT / 'recordings'))
 
 
 def archive_debug_report(call: dict) -> str | None:
@@ -99,9 +101,14 @@ def main() -> int:
             break
         if report.get('pendingDecision'):
             decision = report['pendingDecision']
+            waiting_status = (
+                'awaiting_hermes_agent'
+                if decision.get('kind') == 'voice_handoff'
+                else 'awaiting_hermes_decision'
+            )
             print(json.dumps({
                 'call_id': args.call_id,
-                'status': 'awaiting_hermes_decision',
+                'status': waiting_status,
                 'decision_id': decision.get('id'),
                 'deadline_at': decision.get('deadlineAt'),
                 'kind': decision.get('kind'),

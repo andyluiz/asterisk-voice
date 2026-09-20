@@ -11,6 +11,7 @@ import { createRtpPacingMetrics } from './pacing_metrics.js';
 import { readRealtimeAudioDelta } from './realtime_events.js';
 import { decisionCompletionPlan, shouldGenerateEndCallRejection } from './decision_policy.js';
 import { handoffPolicy } from './handoff_policy.js';
+import { HermesClient } from './hermes_client.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
@@ -84,7 +85,18 @@ const config = {
   realtimeInstructions: process.env.REALTIME_INSTRUCTIONS
     ?? 'You are Hal, Anderson\'s digital assistant. Speak naturally, briefly, and directly in the call language.',
   realtimeGreeting: process.env.REALTIME_GREETING ?? 'Hello Anderson, this is Hal. How can I help?',
+  inboundGreeting: process.env.INBOUND_GREETING || process.env.REALTIME_GREETING
+    || 'Hello, this is Hal, Anderson\'s assistant. How can I help?',
+  inboundPreferredLanguage: process.env.INBOUND_LANGUAGE ?? 'pt-BR',
+  inboundVoiceContext: process.env.INBOUND_VOICE_CONTEXT
+    ?? 'No additional personal context is authorized for this voice session.',
   realtimeIntroduction: process.env.REALTIME_INTRODUCTION ?? DEFAULT_REALTIME_INTRODUCTION,
+  hermesUrl: process.env.HERMES_URL ?? '',
+  hermesToken: process.env.HERMES_TOKEN ?? '',
+  hermesPath: process.env.HERMES_PATH ?? '/internal/voice/handoff',
+  hermesProfile: process.env.HERMES_PROFILE ?? 'hal',
+  hermesTimeoutMs: Number(process.env.HERMES_TIMEOUT_MS ?? '90000'),
+  hermesContextChars: Number(process.env.HERMES_CONTEXT_CHARS ?? '4000'),
   runtimeHost: process.env.RUNTIME_HOST || detectContainerIp(),
   companionToken: process.env.COMPANION_TOKEN ?? '',
   debugRecordCalls: String(process.env.DEBUG_RECORD_CALLS ?? 'false').toLowerCase() === 'true',
@@ -95,6 +107,13 @@ const config = {
   dialplanExtensions: new Set((process.env.DIALPLAN_EXTENSIONS ?? '600,700,9000')
     .split(',').map((value) => value.trim()).filter(Boolean)),
 };
+
+const hermesClient = new HermesClient({
+  baseUrl: config.hermesUrl,
+  token: config.hermesToken,
+  path: config.hermesPath,
+  timeoutMs: config.hermesTimeoutMs,
+});
 
 const app = express();
 app.use(express.json({ limit: '64kb' }));
@@ -263,26 +282,27 @@ function resolveEndpoint({ endpoint, to }) {
 function publicCall(call) {
   const { ws, realtimeCleanup, ...safeCall } = call;
   if (safeCall.pendingDecision) {
-    const { timer, resolve, ...safeDecision } = safeCall.pendingDecision;
+    const { timer, resolve, abortController, ...safeDecision } = safeCall.pendingDecision;
     safeCall.pendingDecision = safeDecision;
   }
   safeCall.events = safeCall.events.map((event) => {
     if (!event.decision) return event;
-    const { timer, resolve, ...safeDecision } = event.decision;
+    const { timer, resolve, abortController, ...safeDecision } = event.decision;
     return { ...event, decision: safeDecision };
   });
   return safeCall;
 }
 
-function createPendingDecision(call, request) {
+function createPendingDecision(call, request, timeoutMs = 20_000) {
   if (call.pendingDecision) throw new Error('A decision is already pending for this call');
+  const boundedTimeoutMs = Math.max(1, Number(timeoutMs) || 20_000);
   const decision = {
     id: randomUUID(),
     kind: String(request.kind ?? '').slice(0, 64),
     candidate: request.candidate && typeof request.candidate === 'object' ? request.candidate : {},
     question: String(request.question ?? '').trim().slice(0, 1000),
     requestedAt: nowIso(),
-    deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+    deadlineAt: new Date(Date.now() + boundedTimeoutMs).toISOString(),
     status: 'pending',
   };
   if (!decision.question) throw new Error('A decision question is required');
@@ -303,6 +323,21 @@ function resolvePendingDecision(call, decision, response) {
   call.pendingDecision = null;
   emitCallEvent('call.decision.resolved', call.id, { decisionId: decision.id, response: decision.response });
   decision.resolve?.(decision.response);
+}
+
+function resolvePendingHermes(call, request, response) {
+  if (!call.pendingDecision || call.pendingDecision.id !== request.id || request.status !== 'pending') {
+    throw new Error('Hermes request is no longer pending');
+  }
+  request.status = 'resolved';
+  request.resolvedAt = nowIso();
+  request.response = response;
+  call.pendingDecision = null;
+  emitCallEvent('call.hermes.resolved', call.id, {
+    requestId: request.id,
+    status: response.status,
+    requiresConfirmation: response.requiresConfirmation,
+  });
 }
 
 function journalPath(callId) {
@@ -503,6 +538,17 @@ function callStatusForState(state) {
   return null;
 }
 
+function inboundVoiceBrief() {
+  return {
+    mission: null,
+    preferred_language: config.inboundPreferredLanguage,
+    adapt_language: true,
+    completion_behavior: 'callee_request_only',
+    interaction_mode: 'hermes_voice',
+    voice_context: config.inboundVoiceContext,
+  };
+}
+
 function normalizeAriEvent(event) {
   const channel = event.channel ?? event.channel_snapshot ?? null;
   const channelId = channel?.id ?? event.channel_id ?? null;
@@ -525,6 +571,7 @@ function normalizeAriEvent(event) {
         endpoint: channel?.name ?? null,
         requestedTo: isInboundRealtime ? 'openclaw' : null,
         from: channel?.caller?.number ?? channel?.caller?.name ?? null,
+        brief: isInboundRealtime ? inboundVoiceBrief() : null,
         channelId,
         status: 'started',
         createdAt: nowIso(),
@@ -532,6 +579,12 @@ function normalizeAriEvent(event) {
         events: [],
       };
       calls.set(callId, stored);
+    }
+    if (isInboundRealtime) {
+      stored.mode = 'realtime';
+      stored.direction = 'inbound';
+      stored.brief ??= inboundVoiceBrief();
+      stored.requestedTo ??= 'openclaw';
     }
     if (channelId) {
       if (isExternalMediaChannel) {
@@ -674,6 +727,16 @@ function openRealtimeWebSocket() {
 
 function buildIntroductionResponse() {
   return { type: 'response.create', response: { output_modalities: ['audio'] } };
+}
+
+function buildInboundGreetingResponse(greeting) {
+  return {
+    type: 'response.create',
+    response: {
+      output_modalities: ['audio'],
+      instructions: greeting,
+    },
+  };
 }
 
 function buildConversationResponse() {
@@ -851,7 +914,7 @@ async function startRealtimeBridge(call, channelId) {
   function sendQueuedResponse(request) {
     if (!request || !wsClient || wsClient.readyState !== WebSocket.OPEN) return false;
     call.activeResponseReason = request.reason;
-    if (request.reason === 'decision-result') markDecisionResultSent();
+    if (request.reason === 'decision-result' || request.reason === 'hermes-result') markDecisionResultSent();
     wsClient.send(JSON.stringify(request.response));
     emitCallEvent('call.response.sent', callId, { reason: request.reason });
     return true;
@@ -880,10 +943,101 @@ async function startRealtimeBridge(call, channelId) {
       return false;
     }
     call.activeResponseReason = reason;
-    if (reason === 'decision-result') markDecisionResultSent();
+    if (reason === 'decision-result' || reason === 'hermes-result') markDecisionResultSent();
     wsClient.send(JSON.stringify(outcome.payload.response));
     emitCallEvent('call.response.sent', callId, { reason });
     return true;
+  }
+
+  function hermesContext() {
+    const limit = Math.max(500, Number(config.hermesContextChars) || 4000);
+    return {
+      direction: call.direction ?? 'outbound',
+      language: call.activeLanguage ?? null,
+      voice_context: call.brief?.voice_context ?? null,
+      recent_caller_transcript: String(call.callerTranscript ?? '').slice(-limit),
+      recent_assistant_transcript: String(call.companionTranscript ?? '').slice(-limit),
+    };
+  }
+
+  function sendFunctionCallOutput(functionCallId, output, reason) {
+    if (!functionCallId || !wsClient || wsClient.readyState !== WebSocket.OPEN) return false;
+    if (reason === 'decision-result' || reason === 'hermes-result') markDecisionResultSent();
+    wsClient.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: functionCallId,
+        output: JSON.stringify(output),
+      },
+    }));
+    requestAudioResponseWithOptions(
+      { type: 'response.create', response: { output_modalities: ['audio'] } },
+      reason,
+      { queueIfBlocked: true },
+    );
+    return true;
+  }
+
+  async function requestHermesHandoff(arguments_) {
+    const policy = handoffPolicy('hermes_voice');
+    const question = String(arguments_?.question ?? '').trim().slice(0, 1000);
+    if (!question) throw new Error('A Hermes question is required');
+
+    if (!hermesClient.configured()) {
+      emitCallEvent('call.hermes.unavailable', callId, { reason: 'not-configured' });
+      return {
+        status: 'failed',
+        say: 'Não consigo acessar o assistente agora. Posso continuar com o que já sei.',
+        requiresConfirmation: false,
+      };
+    }
+
+    const request = createPendingDecision(call, {
+      kind: 'voice_handoff',
+      candidate: {},
+      question,
+    }, policy.timeoutMs);
+    const abortController = new AbortController();
+    request.abortController = abortController;
+    emitCallEvent('call.hermes.requested', callId, {
+      requestId: request.id,
+      question,
+      deadlineAt: request.deadlineAt,
+    });
+
+    try {
+      const response = await hermesClient.request({
+        requestId: request.id,
+        callId,
+        profile: config.hermesProfile,
+        kind: 'voice_handoff',
+        question,
+        context: hermesContext(),
+        deadlineAt: request.deadlineAt,
+        signal: abortController.signal,
+      });
+      if (cleaned) return null;
+      if (request.status === 'pending') resolvePendingHermes(call, request, response);
+      return response;
+    } catch (error) {
+      if (cleaned || error.code === 'HERMES_CANCELLED') return null;
+      const timedOut = error.code === 'HERMES_TIMEOUT';
+      if (request.status === 'pending') {
+        request.status = timedOut ? 'timed_out' : 'failed';
+        request.errorCode = error.code ?? 'HERMES_ERROR';
+        call.pendingDecision = null;
+        emitCallEvent(timedOut ? 'call.hermes.timed_out' : 'call.hermes.failed', callId, {
+          requestId: request.id,
+          error: error.message,
+        });
+      }
+      return {
+        status: 'failed',
+        say: timedOut ? policy.timeoutReply : 'Não consegui consultar o assistente agora. Podemos tentar novamente depois.',
+        requiresConfirmation: false,
+      };
+    }
   }
 
   function maybeFinishDeferredEnd() {
@@ -917,10 +1071,15 @@ async function startRealtimeBridge(call, channelId) {
     if (call.pendingDecision?.status === 'pending') {
       const decision = call.pendingDecision;
       clearTimeout(decision.timer);
+      decision.abortController?.abort();
       call.pendingDecision = null;
       decision.status = 'cancelled';
       decision.resolve?.({ decision: 'callback', say: 'Não foi possível concluir a confirmação agora.' });
-      emitCallEvent('call.decision.cancelled', callId, { decisionId: decision.id, reason });
+      emitCallEvent(decision.kind === 'voice_handoff' ? 'call.hermes.cancelled' : 'call.decision.cancelled', callId, {
+        decisionId: decision.id,
+        ...(decision.kind === 'voice_handoff' ? { requestId: decision.id } : {}),
+        reason,
+      });
     }
     outboundRtpQueue.length = 0;
     outboundAudioRemainder = Buffer.alloc(0);
@@ -1071,8 +1230,13 @@ async function startRealtimeBridge(call, channelId) {
             }
             emitCallEvent('call.realtime.started', callId, {
               model: config.realtimeModel,
-              awaitingCalleeSpeech: true,
+              awaitingCalleeSpeech: call.direction !== 'inbound',
             });
+            if (call.direction === 'inbound' && !call.introductionSent) {
+              call.introductionSent = true;
+              emitCallEvent('call.introduction.started', callId, { afterCalleeSpeech: false, inbound: true });
+              requestAudioResponseWithOptions(buildInboundGreetingResponse(config.inboundGreeting), 'inbound-greeting');
+            }
           } else if (ack.type === 'language-session-updated') {
             emitCallEvent('call.language.session_updated', callId, { language: ack.language });
           }
@@ -1162,17 +1326,28 @@ async function startRealtimeBridge(call, channelId) {
         } else if (msg.type === 'response.function_call_arguments.done') {
           let arguments_ = {};
           try { arguments_ = JSON.parse(msg.arguments ?? '{}'); } catch {}
-          if (msg.name === 'request_decision' || msg.name === 'request_hermes') {
+          if (msg.name === 'request_hermes') {
             try {
-              if (msg.name === 'request_hermes' && call.brief?.interaction_mode !== 'hermes_voice') {
+              if (call.direction !== 'inbound' && call.brief?.interaction_mode !== 'hermes_voice') {
                 throw new Error('request_hermes is available only in Hermes Voice mode');
               }
+              const response = await requestHermesHandoff(arguments_);
+              if (!response || cleaned) return;
+              sendFunctionCallOutput(msg.call_id, response, 'hermes-result');
+            } catch (error) {
+              emitCallEvent('call.hermes.rejected', callId, { error: error.message });
+              sendFunctionCallOutput(msg.call_id, {
+                status: 'failed',
+                say: 'Não consegui consultar o assistente agora. Podemos tentar novamente depois.',
+                requiresConfirmation: false,
+              }, 'hermes-rejected');
+            }
+          } else if (msg.name === 'request_decision') {
+            try {
               const policy = handoffPolicy(call.brief?.interaction_mode);
-              const decision = createPendingDecision(call, msg.name === 'request_hermes'
-                ? { kind: 'voice_handoff', candidate: {}, question: arguments_.question }
-                : arguments_);
+              const decision = createPendingDecision(call, arguments_, policy.timeoutMs);
               // The voice model has already spoken its short wait notice before this tool call.
-              requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, msg.name === 'request_hermes' ? 'hermes-voice-wait-notice' : 'decision-wait-notice', { queueIfBlocked: true });
+              requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, 'decision-wait-notice', { queueIfBlocked: true });
               const response = await new Promise((resolve) => {
                 decision.resolve = resolve;
                 decision.timer = setTimeout(() => resolve({
@@ -1188,11 +1363,12 @@ async function startRealtimeBridge(call, channelId) {
               }
               const completion = decisionCompletionPlan(response);
               if (completion.endAfterResponse) call.decisionCallbackPending = true;
-              const toolOutput = { ...response, say: completion.say };
-              wsClient.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: msg.call_id, output: JSON.stringify(toolOutput) } }));
-              requestAudioResponseWithOptions({ type: 'response.create', response: { output_modalities: ['audio'] } }, 'decision-result', { queueIfBlocked: true });
+              sendFunctionCallOutput(msg.call_id, { ...response, say: completion.say }, 'decision-result');
             } catch (error) {
               emitCallEvent('call.decision.rejected', callId, { error: error.message });
+              sendFunctionCallOutput(msg.call_id, {
+                error: error.message,
+              }, 'decision-rejected');
             }
           } else if (msg.name !== 'end_call') {
             emitCallEvent('call.control.rejected', callId, { name: msg.name ?? null, reason: 'tool-not-allowlisted' });
@@ -1219,9 +1395,11 @@ async function startRealtimeBridge(call, channelId) {
           const finishedReason = call.activeResponseReason ?? null;
           call.activeResponseReason = null;
           flushQueuedResponses(markResponseDone(responseState));
-          if (finishedReason === 'decision-result') {
+          if (finishedReason === 'decision-result' || finishedReason === 'hermes-result') {
             call.decisionResolving = false;
-            emitCallEvent('call.decision.response_completed', callId, {});
+            emitCallEvent(finishedReason === 'hermes-result'
+              ? 'call.hermes.response_completed'
+              : 'call.decision.response_completed', callId, {});
           }
           if (deferredEnd && (deferredEnd.reason !== 'hermes-decision-callback' || finishedReason === 'decision-result')) {
             deferredEnd.responseDone = true;
@@ -1349,6 +1527,10 @@ app.get('/health', async (req, res) => {
     knownCallCount: calls.size,
     localOnly: true,
     allowedExtensions: [...config.allowedExtensions],
+    hermes: {
+      configured: hermesClient.configured(),
+      profile: config.hermesProfile,
+    },
   });
 });
 
@@ -1394,6 +1576,9 @@ app.post('/v1/calls/:id/decisions/:decisionId/respond', (req, res, next) => {
     if (!call) return res.status(404).json({ error: 'Call not found' });
     const decision = call.pendingDecision;
     if (!decision || decision.id !== req.params.decisionId) return res.status(404).json({ error: 'Pending decision not found' });
+    if (decision.kind === 'voice_handoff') {
+      return res.status(409).json({ error: 'Hermes voice handoffs are resolved by the configured Hermes transport' });
+    }
     resolvePendingDecision(call, decision, req.body ?? {});
     return res.json(publicCall(call));
   } catch (error) {

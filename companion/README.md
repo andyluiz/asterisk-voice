@@ -13,6 +13,7 @@ This is **only the companion service**. Asterisk PBX runs separately (Docker, ba
 The Asterisk side needs:
 - `ari.conf` with a user matching `ARI_USERNAME` / `ARI_PASSWORD`
 - `extensions.conf` with a Stasis app named `ARI_APP` (default `openclaw`)
+- inbound routes entering `Stasis(openclaw,inbound-realtime[,call-id])`
 - `pjsip.conf` with endpoints in `ALLOWED_EXTENSIONS`
 - RTP range matching `rtp.conf`
 
@@ -44,6 +45,15 @@ All via environment variables (`.env`):
 | `ALLOWED_EXTENSIONS` | `1001,1002,600,700,9000` | Allowed dial targets |
 | `DIALPLAN_EXTENSIONS` | `600,700,9000` | Dialplan (Local/...) targets |
 | `COMPANION_TOKEN` | *(required)* | Bearer token for companion API |
+| `INBOUND_GREETING` | *(see `.env.example`)* | Greeting spoken before inbound caller speech |
+| `INBOUND_LANGUAGE` | `pt-BR` | Initial language for inbound calls |
+| `INBOUND_VOICE_CONTEXT` | *(no extra context)* | Curated context available to the voice layer |
+| `HERMES_URL` | *(disabled)* | Authenticated Hermes handoff base URL |
+| `HERMES_PATH` | `/internal/voice/handoff` | Hermes handoff route |
+| `HERMES_TOKEN` | *(required when enabled)* | Companion-to-Hermes bearer token |
+| `HERMES_PROFILE` | `hal` | Hermes profile/session target |
+| `HERMES_TIMEOUT_MS` | `90000` | Maximum Hermes handoff wait |
+| `HERMES_CONTEXT_CHARS` | `4000` | Maximum recent transcript chars per side |
 | `DEBUG_RECORD_CALLS` | `true` | Record WAV + JSON + journal |
 | `CALL_JOURNAL_DIR` | `/recordings/call-events` | Journal output dir |
 
@@ -54,12 +64,43 @@ All via environment variables (`.env`):
 # 2. Copy and edit config
 cp .env.example .env
 # Fill in ARI_PASSWORD, OPENAI_API_KEY, COMPANION_TOKEN, etc.
+# Configure HERMES_URL and HERMES_TOKEN when higher-function handoffs are enabled.
 
 # 3. Build and run
 docker compose up -d --build
 
 # 4. Health check
 curl -H "Authorization: Bearer $COMPANION_TOKEN" http://localhost:8091/health
+```
+
+## Inbound voice and Hermes handoff
+
+The companion keeps the low-latency audio loop in OpenAI Realtime. Ordinary
+conversation stays there. Realtime calls the bounded `request_hermes` tool only
+for private information, research, decisions, or external actions. The
+companion sends that text request and a short transcript context to the
+authenticated `HERMES_URL`, then returns the validated `say` result to Realtime.
+
+An inbound Asterisk route must use the exact first Stasis argument:
+
+```asterisk
+exten => 700,1,NoOp(Hermes inbound voice)
+ same => n,Answer()
+ same => n,Stasis(openclaw,inbound-realtime)
+ same => n,Hangup()
+```
+
+Inbound calls receive the Hermes Voice prompt and configured `INBOUND_GREETING`.
+The Hermes endpoint should accept a JSON request with `request_id`, `call_id`,
+`profile`, `kind`, `question`, `context`, and `deadline_at`, and return a
+bounded response such as:
+
+```json
+{
+  "status": "completed",
+  "say": "The requested result is ...",
+  "requires_confirmation": false
+}
 ```
 
 ## Deploy as a reusable service
