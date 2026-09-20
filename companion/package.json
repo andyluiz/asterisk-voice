@@ -6,7 +6,8 @@
   "description": "Local-only Asterisk ExternalMedia companion for Hermes.",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test",
+    "test": "node --test && npm run test:bridge",
+    "test:bridge": "VOICE_HANDOFF_SERVER_PATH=${VOICE_HANDOFF_SERVER_PATH:-/home/anderson/.hermes/profiles/hal/scripts/voice_handoff_server.py} python3 ../mcp/test_voice_handoff_server.py",
     "test:realtime": "node scripts/realtime_scenario_smoke.js"
   },
   "dependencies": {

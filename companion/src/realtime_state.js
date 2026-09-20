@@ -51,7 +51,7 @@ export function buildLanguageSyncItem(sync) {
   };
 }
 
-export function requestResponse(state, response, reason, { queueIfBlocked = false } = {}) {
+export function requestResponse(state, response, reason, { queueIfBlocked = reason === 'caller-transcript' } = {}) {
   if (!canSendResponse(state)) {
     if (!queueIfBlocked) return { sent: false, queued: false, reason };
     state.queuedResponses.push({ response, reason });

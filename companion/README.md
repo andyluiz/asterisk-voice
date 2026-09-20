@@ -13,7 +13,6 @@ This is **only the companion service**. Asterisk PBX runs separately (Docker, ba
 The Asterisk side needs:
 - `ari.conf` with a user matching `ARI_USERNAME` / `ARI_PASSWORD`
 - `extensions.conf` with a Stasis app named `ARI_APP` (default `openclaw`)
-- inbound routes entering `Stasis(openclaw,inbound-realtime[,call-id])`
 - `pjsip.conf` with endpoints in `ALLOWED_EXTENSIONS`
 - RTP range matching `rtp.conf`
 
@@ -38,22 +37,15 @@ All via environment variables (`.env`):
 | `ARI_APP` | `openclaw` | Stasis app name |
 | `DEFAULT_CONTEXT` | `internal` | Asterisk dialplan context |
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key |
-| `REALTIME_MODEL` | `gpt-realtime` | Realtime model |
-| `REALTIME_VOICE` | `ash` | Realtime voice |
+| `REALTIME_MODEL` | `gpt-realtime-2` | Realtime model |
+| `REALTIME_VOICE` | `marin` | Realtime voice |
 | `REALTIME_VAD_SILENCE_MS` | `450` | VAD silence threshold |
 | `REALTIME_INSTRUCTIONS` | *(see realtime.js)* | Session instructions |
+| `INBOUND_TRUSTED_CALLERS` | *(empty)* | Comma-separated caller IDs permitted to enter Hermes Voice; IDs are normalized before comparison |
+| `INBOUND_HERMES_VOICE_CONTEXT` | *(concise pt-BR preference)* | Curated context exposed only to trusted inbound callers |
 | `ALLOWED_EXTENSIONS` | `1001,1002,600,700,9000` | Allowed dial targets |
 | `DIALPLAN_EXTENSIONS` | `600,700,9000` | Dialplan (Local/...) targets |
 | `COMPANION_TOKEN` | *(required)* | Bearer token for companion API |
-| `INBOUND_GREETING` | *(see `.env.example`)* | Greeting spoken before inbound caller speech |
-| `INBOUND_LANGUAGE` | `pt-BR` | Initial language for inbound calls |
-| `INBOUND_VOICE_CONTEXT` | *(no extra context)* | Curated context available to the voice layer |
-| `HERMES_URL` | *(disabled)* | Authenticated Hermes handoff base URL |
-| `HERMES_PATH` | `/internal/voice/handoff` | Hermes handoff route |
-| `HERMES_TOKEN` | *(required when enabled)* | Companion-to-Hermes bearer token |
-| `HERMES_PROFILE` | `hal` | Hermes profile/session target |
-| `HERMES_TIMEOUT_MS` | `90000` | Maximum Hermes handoff wait |
-| `HERMES_CONTEXT_CHARS` | `4000` | Maximum recent transcript chars per side |
 | `DEBUG_RECORD_CALLS` | `true` | Record WAV + JSON + journal |
 | `CALL_JOURNAL_DIR` | `/recordings/call-events` | Journal output dir |
 
@@ -64,7 +56,6 @@ All via environment variables (`.env`):
 # 2. Copy and edit config
 cp .env.example .env
 # Fill in ARI_PASSWORD, OPENAI_API_KEY, COMPANION_TOKEN, etc.
-# Configure HERMES_URL and HERMES_TOKEN when higher-function handoffs are enabled.
 
 # 3. Build and run
 docker compose up -d --build
@@ -73,35 +64,44 @@ docker compose up -d --build
 curl -H "Authorization: Bearer $COMPANION_TOKEN" http://localhost:8091/health
 ```
 
-## Inbound voice and Hermes handoff
+## Inbound Hermes Voice admission
 
-The companion keeps the low-latency audio loop in OpenAI Realtime. Ordinary
-conversation stays there. Realtime calls the bounded `request_hermes` tool only
-for private information, research, decisions, or external actions. The
-companion sends that text request and a short transcript context to the
-authenticated `HERMES_URL`, then returns the validated `say` result to Realtime.
+The `700` dialplan extension enters `Stasis(openclaw,inbound-realtime)` **without**
+`Answer()`. On Stasis, the Companion writes a durable `pending_admission` record,
+emits an authenticated `call.inbound.admission_requested` event, and leaves the
+caller ringing. It does not invoke ARI answer, create ExternalMedia/a bridge, open
+OpenAI Realtime, or send a greeting until an explicit authenticated decision.
 
-An inbound Asterisk route must use the exact first Stasis argument:
+Use the local MCP tools `pending_inbound_admissions` then
+`decide_inbound_admission(call_id, decision)` (`answer`, `decline`, or
+`leave_ringing`), or the equivalent authenticated HTTP API:
 
-```asterisk
-exten => 700,1,NoOp(Hermes inbound voice)
- same => n,Answer()
- same => n,Stasis(openclaw,inbound-realtime)
- same => n,Hangup()
-```
+- `GET /v1/inbound-admissions`
+- `POST /v1/calls/:id/admission` with `{"decision":"answer"}`
 
-Inbound calls receive the Hermes Voice prompt and configured `INBOUND_GREETING`.
-The Hermes endpoint should accept a JSON request with `request_id`, `call_id`,
-`profile`, `kind`, `question`, `context`, and `deadline_at`, and return a
-bounded response such as:
+An admission deadline (`INBOUND_ADMISSION_TIMEOUT_MS`, default 30 seconds) is a
+safe no-answer result: it journals `timed_out` and leaves the phone ringing until
+the caller ends it. There is intentionally no fallback greeting or hangup.
 
-```json
-{
-  "status": "completed",
-  "say": "The requested result is ...",
-  "requires_confirmation": false
-}
-```
+Configure trusted identities as `E.164|known-label|relation` in
+`INBOUND_TRUSTED_CALLERS`. The voice prompt receives only server-authored label,
+relation, opaque session ID, and start time, plus curated voice context—never the
+raw number, ARI channel ID, or caller-provided SIP display name. Trusted callers
+use the narrow `request_hermes` handoff for substantive/current/private/tool-backed
+requests; unknown callers stay in the no-tools `inbound_restricted` mode.
+
+Configure `INBOUND_HERMES_WEBHOOK_ROUTES` as a JSON route table keyed by normalized
+local caller extension. Each enabled route must name a non-`default` profile, a
+loopback-only webhook URL, and a distinct secret environment variable. There is no
+fallback: unlisted callers do not notify any profile. The supplied template maps
+`1001 → hal` and carries disabled placeholders for `1002 → nova` and `1003 → kairo`;
+keep those disabled until their own ports and secrets exist. The Companion POSTs
+only the opaque admission request plus server-selected `callerProfile` routing
+metadata using Hermes generic HMAC V2 (`X-Webhook-Timestamp` plus
+`X-Webhook-Signature-V2`) and a stable `X-Request-ID`. It retries transient/HTTP
+failures with that same idempotency key; a notification failure never answers,
+hangs up, or otherwise changes the ringing call. Hermes receives the deadline in
+the payload and must use `decide_inbound_admission`; only `answer` begins Voice.
 
 ## Deploy as a reusable service
 

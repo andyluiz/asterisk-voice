@@ -39,6 +39,16 @@ class CompanionClient:
     def call_status(self, *, call_id: str) -> dict:
         return self.request('GET', f'/v1/calls/{call_id}')
 
+    def pending_inbound_admissions(self) -> dict:
+        """List authenticated inbound calls awaiting an explicit answer decision."""
+        return self.request('GET', '/v1/inbound-admissions')
+
+    def decide_inbound_admission(self, *, call_id: str, decision: str) -> dict:
+        """Answer, decline, or leave one pending inbound call ringing."""
+        if decision not in {'answer', 'decline', 'leave_ringing'}:
+            raise ValueError('decision must be answer, decline, or leave_ringing')
+        return self.request('POST', f'/v1/calls/{call_id}/admission', {'decision': decision})
+
     def respond_to_call_decision(self, *, call_id: str, decision_id: str, decision: str, say: str) -> dict:
         return self.request('POST', f'/v1/calls/{call_id}/decisions/{decision_id}/respond', {
             'decision': decision,

@@ -8,8 +8,8 @@ from mcp.server.fastmcp import FastMCP
 
 from client import CompanionClient
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = Path(os.environ.get('ASTERISK_VOICE_ENV_FILE', PROJECT_ROOT / '.env'))
+ENV_PATH = Path(os.environ.get('ASTERISK_VOICE_ENV_PATH', Path(__file__).resolve().parents[1] / '.env'))
+TOOL_MODE = os.environ.get('ASTERISK_MCP_TOOL_MODE', 'full').strip().lower()
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -38,62 +38,77 @@ mcp = FastMCP('asterisk-hermes', instructions=(
 ))
 
 
-@mcp.tool()
-def companion_health() -> dict:
-    """Return local Asterisk/companion health. Does not start a call."""
-    return companion().health()
+if TOOL_MODE != 'admission':
+    @mcp.tool()
+    def companion_health() -> dict:
+        """Return local Asterisk/companion health. Does not start a call."""
+        return companion().health()
+
+
+    @mcp.tool()
+    def prepare_local_call(to: str, purpose: str, brief: dict | None = None) -> dict:
+        """Prepare an allowlisted internal call with an immutable, bounded task brief.
+
+        The brief accepts a trusted free-text `mission`, plus optional `simulation`,
+        `preferred_language`, and `adapt_language`. The mission is injected into the
+        Realtime session as immutable task context; it grants no tools.
+        """
+        return companion().prepare_call(to=to, purpose=purpose, brief=brief)
+
+
+    @mcp.tool()
+    def start_approved_call(call_id: str, user_confirmed: bool) -> dict:
+        """Start a prepared call only after explicit user confirmation in this conversation."""
+        return companion().start_call(call_id=call_id, approved=user_confirmed)
+
+
+    @mcp.tool()
+    def get_call_status(call_id: str) -> dict:
+        """Get state and summarized events for a prepared or active call."""
+        return companion().call_status(call_id=call_id)
+
+
+if TOOL_MODE != 'admission':
+    @mcp.tool()
+    def pending_inbound_admissions() -> dict:
+        """List inbound calls awaiting an explicit answer decision. Does not answer a call."""
+        return companion().pending_inbound_admissions()
 
 
 @mcp.tool()
-def prepare_local_call(to: str, purpose: str, brief: dict | None = None) -> dict:
-    """Prepare an allowlisted internal call with an immutable, bounded task brief.
-
-    The brief accepts a trusted free-text `mission`, plus optional `simulation`,
-    `preferred_language`, and `adapt_language`. The mission is injected into the
-    Realtime session as immutable task context; it grants no tools.
-    """
-    return companion().prepare_call(to=to, purpose=purpose, brief=brief)
+def decide_inbound_admission(call_id: str, decision: str) -> dict:
+    """Explicitly answer, decline, or leave one inbound call ringing."""
+    return companion().decide_inbound_admission(call_id=call_id, decision=decision)
 
 
-@mcp.tool()
-def start_approved_call(call_id: str, user_confirmed: bool) -> dict:
-    """Start a prepared call only after explicit user confirmation in this conversation."""
-    return companion().start_call(call_id=call_id, approved=user_confirmed)
+if TOOL_MODE != 'admission':
+    @mcp.tool()
+    def respond_to_call_decision(call_id: str, decision_id: str, decision: str, say: str) -> dict:
+        """Resolve one pending call decision. Only accept, decline, counteroffer, or callback are allowed."""
+        if decision not in {'accept', 'decline', 'counteroffer', 'callback'}:
+            raise ValueError('decision must be accept, decline, counteroffer, or callback')
+        return companion().respond_to_call_decision(call_id=call_id, decision_id=decision_id, decision=decision, say=say)
 
 
-@mcp.tool()
-def get_call_status(call_id: str) -> dict:
-    """Get state and summarized events for a prepared or active call."""
-    return companion().call_status(call_id=call_id)
+    @mcp.tool()
+    def hangup_call(call_id: str) -> dict:
+        """End a prepared or active local call."""
+        return companion().hangup_call(call_id=call_id)
 
 
-@mcp.tool()
-def respond_to_call_decision(call_id: str, decision_id: str, decision: str, say: str) -> dict:
-    """Resolve one pending call decision. Only accept, decline, counteroffer, or callback are allowed."""
-    if decision not in {'accept', 'decline', 'counteroffer', 'callback'}:
-        raise ValueError('decision must be accept, decline, counteroffer, or callback')
-    return companion().respond_to_call_decision(call_id=call_id, decision_id=decision_id, decision=decision, say=say)
+    @mcp.tool()
+    def wait_for_call_completion(call_id: str, timeout_seconds: int = 3600) -> dict:
+        """Wait for a local call to end and return its final status and events.
 
-
-@mcp.tool()
-def hangup_call(call_id: str) -> dict:
-    """End a prepared or active local call."""
-    return companion().hangup_call(call_id=call_id)
-
-
-@mcp.tool()
-def wait_for_call_completion(call_id: str, timeout_seconds: int = 3600) -> dict:
-    """Wait for a local call to end and return its final status and events.
-
-    Run this as a background task after starting a call so its completion report
-    returns to the initiating Hermes session.
-    """
-    if not 1 <= timeout_seconds <= 7200:
-        raise ValueError('timeout_seconds must be between 1 and 7200')
-    return companion().wait_for_call_completion(
-        call_id=call_id,
-        timeout_seconds=timeout_seconds,
-    )
+        Run this as a background task after starting a call so its completion report
+        returns to the initiating Hermes session.
+        """
+        if not 1 <= timeout_seconds <= 7200:
+            raise ValueError('timeout_seconds must be between 1 and 7200')
+        return companion().wait_for_call_completion(
+            call_id=call_id,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 if __name__ == '__main__':

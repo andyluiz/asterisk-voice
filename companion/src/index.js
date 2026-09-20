@@ -11,12 +11,28 @@ import { createRtpPacingMetrics } from './pacing_metrics.js';
 import { readRealtimeAudioDelta } from './realtime_events.js';
 import { decisionCompletionPlan, shouldGenerateEndCallRejection } from './decision_policy.js';
 import { handoffPolicy } from './handoff_policy.js';
+import { callerHandoffTranscript } from './handoff_context.js';
+import { appendConversationTurn, formatRecentConversation } from './conversation_context.js';
+import { callerExplicitlyRequestedHangup } from './hangup_policy.js';
 import { HermesClient } from './hermes_client.js';
+import { createAriRequest } from './ari_request.js';
+import { createIdleWatchdog, shouldResetIdleWatchdog } from './idle_watchdog.js';
+import {
+  createInboundCall,
+  decideInboundAdmission,
+  parseTrustedCallers,
+} from './inbound_policy.js';
+import { notifyInboundAdmission } from './inbound_notification.js';
+import { inboundWebhookRouteForCaller } from './inbound_routing.js';
+import { reconcileInboundChannels } from './inbound_reconciliation.js';
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
+  buildExactInboundGreetingResponse,
   buildRealtimeSessionUpdate,
   detectCallLanguage,
+  inboundGreetingForCall,
+  shouldStartInboundGreeting,
 } from './realtime.js';
 import {
   acknowledgeConversationItemCreated,
@@ -73,6 +89,7 @@ const config = {
   ariWsUrl: process.env.ARI_WS_URL ?? 'ws://asterisk:8088/ari/events',
   ariUsername: process.env.ARI_USERNAME ?? 'openclaw',
   ariPassword: process.env.ARI_PASSWORD ?? 'openclaw-local-change-me',
+  ariRequestTimeoutMs: Number(process.env.ARI_REQUEST_TIMEOUT_MS ?? '5000'),
   ariApp: process.env.ARI_APP ?? 'openclaw',
   defaultContext: process.env.DEFAULT_CONTEXT ?? 'internal',
   testPromptSound: process.env.TEST_PROMPT_SOUND ?? 'custom/openclaw-test-prompt',
@@ -84,6 +101,12 @@ const config = {
   realtimeVadSilenceMs: Number(process.env.REALTIME_VAD_SILENCE_MS ?? '450'),
   realtimeInstructions: process.env.REALTIME_INSTRUCTIONS
     ?? 'You are Hal, Anderson\'s digital assistant. Speak naturally, briefly, and directly in the call language.',
+  inboundTrustedCallers: parseTrustedCallers(process.env.INBOUND_TRUSTED_CALLERS),
+  inboundAdmissionTimeoutMs: Number(process.env.INBOUND_ADMISSION_TIMEOUT_MS ?? '30000'),
+  inboundReconciliationIntervalMs: Number(process.env.INBOUND_RECONCILIATION_INTERVAL_MS ?? '1000'),
+  inboundHermesVoiceContext: process.env.INBOUND_HERMES_VOICE_CONTEXT
+    ?? 'Anderson prefers concise, natural Brazilian Portuguese replies.',
+
   realtimeGreeting: process.env.REALTIME_GREETING ?? 'Hello Anderson, this is Hal. How can I help?',
   inboundGreeting: process.env.INBOUND_GREETING || process.env.REALTIME_GREETING
     || 'Hello, this is Hal, Anderson\'s assistant. How can I help?',
@@ -97,6 +120,8 @@ const config = {
   hermesProfile: process.env.HERMES_PROFILE ?? 'hal',
   hermesTimeoutMs: Number(process.env.HERMES_TIMEOUT_MS ?? '90000'),
   hermesContextChars: Number(process.env.HERMES_CONTEXT_CHARS ?? '4000'),
+  inboundIdleWarningMs: Number(process.env.INBOUND_IDLE_WARNING_MS ?? '45000'),
+  inboundIdleTimeoutMs: Number(process.env.INBOUND_IDLE_TIMEOUT_MS ?? '60000'),
   runtimeHost: process.env.RUNTIME_HOST || detectContainerIp(),
   companionToken: process.env.COMPANION_TOKEN ?? '',
   debugRecordCalls: String(process.env.DEBUG_RECORD_CALLS ?? 'false').toLowerCase() === 'true',
@@ -138,44 +163,21 @@ const sseClients = new Set();
 let ariWs = null;
 let ariWsConnected = false;
 let reconnectTimer = null;
-
-function authHeader() {
-  return `Basic ${Buffer.from(`${config.ariUsername}:${config.ariPassword}`).toString('base64')}`;
-}
+let inboundReconciliationTimer = null;
+let inboundReconciliationRunning = false;
+let inboundReconciliationLastResult = null;
+let inboundReconciliationLastError = null;
 
 function ariRestUrl(path) {
   return new URL(path.replace(/^\/+/, ''), `${config.ariUrl.replace(/\/+$/, '')}/`).toString();
 }
 
-async function ariRequest(path, options = {}) {
-  const response = await fetch(ariRestUrl(path), {
-    ...options,
-    headers: {
-      Authorization: authHeader(),
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers,
-    },
-  });
-
-  const text = await response.text();
-  let body = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  }
-
-  if (!response.ok) {
-    const error = new Error(`ARI ${options.method ?? 'GET'} ${path} failed: ${response.status}`);
-    error.status = response.status;
-    error.body = body;
-    throw error;
-  }
-
-  return body;
-}
+const ariRequest = createAriRequest({
+  ariUrl: config.ariUrl,
+  ariUsername: config.ariUsername,
+  ariPassword: config.ariPassword,
+  timeoutMs: config.ariRequestTimeoutMs,
+});
 
 async function ariBinaryRequest(path, options = {}) {
   const response = await fetch(ariRestUrl(path), {
@@ -280,7 +282,7 @@ function resolveEndpoint({ endpoint, to }) {
 }
 
 function publicCall(call) {
-  const { ws, realtimeCleanup, ...safeCall } = call;
+  const { ws, realtimeCleanup, admissionTimer, from, callerName, ...safeCall } = call;
   if (safeCall.pendingDecision) {
     const { timer, resolve, abortController, ...safeDecision } = safeCall.pendingDecision;
     safeCall.pendingDecision = safeDecision;
@@ -549,6 +551,34 @@ function inboundVoiceBrief() {
   };
 }
 
+function armInboundAdmissionTimeout(call) {
+  if (call.admissionTimer || !Number.isFinite(config.inboundAdmissionTimeoutMs) || config.inboundAdmissionTimeoutMs <= 0) return;
+  call.admissionTimer = setTimeout(() => {
+    if (call.admission?.status !== 'pending') return;
+    const result = decideInboundAdmission(call.admission, 'timeout');
+    call.status = 'ringing';
+    emitCallEvent('call.inbound.admission_timed_out', call.id, {
+      status: result.status,
+      action: 'leave_ringing',
+    });
+  }, config.inboundAdmissionTimeoutMs);
+}
+
+async function answerAdmittedInboundCall(call) {
+  if (call.bridgeStarted || call.admission?.status !== 'admitted') return;
+  call.bridgeStarted = true;
+  try {
+    await ariRequest(`/channels/${encodeURIComponent(call.primaryChannelId)}/answer`, { method: 'POST' });
+    call.status = 'answered';
+    emitCallEvent('call.inbound.answered', call.id, { channelId: call.primaryChannelId });
+    await startRealtimeBridge(call, call.primaryChannelId);
+  } catch (error) {
+    call.bridgeStarted = false;
+    emitCallEvent('call.error', call.id, { error: error.message });
+    throw error;
+  }
+}
+
 function normalizeAriEvent(event) {
   const channel = event.channel ?? event.channel_snapshot ?? null;
   const channelId = channel?.id ?? event.channel_id ?? null;
@@ -559,17 +589,28 @@ function normalizeAriEvent(event) {
   if (event.type === 'StasisStart') {
     const stasisMode = event.args?.[0] ?? null;
     const isInboundRealtime = stasisMode === 'inbound-realtime';
-    const callId = isInboundRealtime
-      ? (event.args?.[1] || call?.id || `inbound-${channelId || randomUUID()}`)
+    let callId = isInboundRealtime
+      ? call?.id ?? null
       : (event.args?.[0] || call?.id || channelId || randomUUID());
-    let stored = calls.get(callId);
+    let stored = callId ? calls.get(callId) : null;
     if (!stored) {
-      stored = {
+      const inboundWebhook = isInboundRealtime
+        ? inboundWebhookRouteForCaller(channel?.caller?.number ?? null)
+        : null;
+      stored = isInboundRealtime ? createInboundCall({
+        channelId,
+        channelName: channel?.name ?? null,
+        callerNumber: channel?.caller?.number ?? null,
+        callerProfile: inboundWebhook?.profile ?? null,
+        trustedCallers: config.inboundTrustedCallers,
+        voiceContext: config.inboundHermesVoiceContext,
+        admissionTimeoutMs: config.inboundAdmissionTimeoutMs,
+      }) : {
         id: callId,
-        mode: isInboundRealtime ? 'realtime' : undefined,
-        direction: isInboundRealtime ? 'inbound' : undefined,
+        mode: undefined,
+        direction: undefined,
         endpoint: channel?.name ?? null,
-        requestedTo: isInboundRealtime ? 'openclaw' : null,
+        requestedTo: null,
         from: channel?.caller?.number ?? channel?.caller?.name ?? null,
         brief: isInboundRealtime ? inboundVoiceBrief() : null,
         channelId,
@@ -578,7 +619,29 @@ function normalizeAriEvent(event) {
         updatedAt: nowIso(),
         events: [],
       };
+      callId = stored.id;
       calls.set(callId, stored);
+      if (isInboundRealtime) {
+        journalCallSnapshot(stored);
+        emitCallEvent('call.inbound.admission_requested', callId, stored.admission.request);
+        // The webhook is an authenticated, idempotent notification only. It
+        // cannot answer the call: Hermes must use the MCP decision tool.
+        notifyInboundAdmission(stored.admission.request, inboundWebhook)
+          .then((delivery) => {
+            emitCallEvent(
+              delivery.delivered ? 'call.inbound.admission_notified' : 'call.inbound.admission_notification_failed',
+              callId,
+              { deliveryId: delivery.deliveryId ?? null, attempts: delivery.attempts ?? 0, status: delivery.status ?? null },
+            );
+          })
+          .catch((error) => {
+            // notifyInboundAdmission normally returns failures, but never let a
+            // notification fault alter ringing/admission behavior.
+            console.error('[inbound] Hermes admission notification failed:', error.message);
+            emitCallEvent('call.inbound.admission_notification_failed', callId, { attempts: 0, status: null });
+          });
+        armInboundAdmissionTimeout(stored);
+      }
     }
     if (isInboundRealtime) {
       stored.mode = 'realtime';
@@ -601,18 +664,27 @@ function normalizeAriEvent(event) {
       runPromptRecordTest(stored, channelId);
     }
     if (stored.mode === 'realtime' && channelId && !stored.bridgeStarted) {
-      stored.bridgeStarted = true;
-      stored.primaryChannelId = channelId;
-      // Answer the channel first so it's in a bridgeable state
-      ariRequest(`/channels/${encodeURIComponent(channelId)}/answer`, { method: 'POST' })
-        .catch(() => {}) // answer may fail if already answered; that's fine
-        .finally(() => {
-          startRealtimeBridge(stored, channelId).catch((err) => {
-            stored.bridgeStarted = false; // allow retry on explicit re-call only
-            console.error('[realtime] bridge start failed:', err.message);
-            emitCallEvent('call.error', stored.id, { error: err.message });
+      if (stored.direction === 'inbound') {
+        // Stasis is deliberately pre-answer: only the authenticated admission endpoint
+        // can move this channel into ARI answer and the media/Realtime bridge.
+        if (stored.admission?.status === 'admitted') {
+          answerAdmittedInboundCall(stored).catch((err) => {
+            console.error('[inbound] admitted bridge start failed:', err.message);
           });
-        });
+        }
+      } else {
+        stored.bridgeStarted = true;
+        stored.primaryChannelId = channelId;
+        ariRequest(`/channels/${encodeURIComponent(channelId)}/answer`, { method: 'POST' })
+          .catch(() => {}) // answer may fail if already answered; that's fine
+          .finally(() => {
+            startRealtimeBridge(stored, channelId).catch((err) => {
+              stored.bridgeStarted = false; // allow retry on explicit re-call only
+              console.error('[realtime] bridge start failed:', err.message);
+              emitCallEvent('call.error', stored.id, { error: err.message });
+            });
+          });
+      }
     }
     return;
   }
@@ -671,6 +743,7 @@ function normalizeAriEvent(event) {
   }
 
   if (event.type === 'StasisEnd') {
+    if (call.admissionTimer) clearTimeout(call.admissionTimer);
     if (call.mode === 'realtime' && typeof call.realtimeCleanup === 'function' && !call.realtimeCleanupStarted) {
       call.realtimeCleanup('stasis-end').catch((error) => {
         console.error('[realtime] cleanup after StasisEnd failed:', error.message);
@@ -729,16 +802,6 @@ function buildIntroductionResponse() {
   return { type: 'response.create', response: { output_modalities: ['audio'] } };
 }
 
-function buildInboundGreetingResponse(greeting) {
-  return {
-    type: 'response.create',
-    response: {
-      output_modalities: ['audio'],
-      instructions: greeting,
-    },
-  };
-}
-
 function buildConversationResponse() {
   return { type: 'response.create', response: { output_modalities: ['audio'] } };
 }
@@ -749,13 +812,6 @@ function readRealtimeTranscript(event) {
     ?? event.delta
     ?? event.item?.content?.transcript
     ?? null;
-}
-
-export function calleeExplicitlyRequestedHangup(transcript) {
-  const text = String(transcript || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase();
-  return /\b(pode (encerrar|desligar|finalizar|concluir)|vamos (encerrar|desligar|finalizar)|desligue|pode fechar a ligacao|hang up|end (the )?call|you can (hang up|end the call)|tot ziens|hang op)\b/.test(text);
 }
 
 async function startRealtimeBridge(call, channelId) {
@@ -806,6 +862,24 @@ async function startRealtimeBridge(call, channelId) {
   eventLoopDelay.enable();
   let deferredEnd = null;
   let cleaned = false;
+  let idleWatchdog = null;
+
+  function resetIdleWatchdog(reason) {
+    if (!idleWatchdog || cleaned || call.direction !== 'inbound') return;
+    if (!shouldResetIdleWatchdog(reason, call.activeResponseReason)) return;
+    idleWatchdog.reset();
+    emitCallEvent('call.idle.activity', callId, { reason });
+  }
+
+  function buildIdleWarningResponse() {
+    return {
+      type: 'response.create',
+      response: {
+        output_modalities: ['audio'],
+        instructions: "Say exactly this one sentence in Brazilian Portuguese: 'Ainda está aí?' Do not add any other words, question, greeting, or explanation.",
+      },
+    };
+  }
 
   function rememberAsteriskSource(rinfo, inboundRtp) {
     if (!asteriskRemoteAddress) {
@@ -955,6 +1029,7 @@ async function startRealtimeBridge(call, channelId) {
       direction: call.direction ?? 'outbound',
       language: call.activeLanguage ?? null,
       voice_context: call.brief?.voice_context ?? null,
+      recent_conversation: formatRecentConversation(call.conversationTurns),
       recent_caller_transcript: String(call.callerTranscript ?? '').slice(-limit),
       recent_assistant_transcript: String(call.companionTranscript ?? '').slice(-limit),
     };
@@ -981,8 +1056,11 @@ async function startRealtimeBridge(call, channelId) {
 
   async function requestHermesHandoff(arguments_) {
     const policy = handoffPolicy('hermes_voice');
-    const question = String(arguments_?.question ?? '').trim().slice(0, 1000);
-    if (!question) throw new Error('A Hermes question is required');
+    // The Realtime function argument is only a handoff signal. It can be a
+    // paraphrase or contain a false premise; Hal must receive the caller's
+    // own recent finalized words as the authoritative request.
+    const question = callerHandoffTranscript(call.callerTranscript);
+    if (!question) throw new Error('A caller transcript is required for Hermes handoff');
 
     if (!hermesClient.configured()) {
       emitCallEvent('call.hermes.unavailable', callId, { reason: 'not-configured' });
@@ -1000,6 +1078,7 @@ async function startRealtimeBridge(call, channelId) {
     }, policy.timeoutMs);
     const abortController = new AbortController();
     request.abortController = abortController;
+    idleWatchdog?.pause();
     emitCallEvent('call.hermes.requested', callId, {
       requestId: request.id,
       question,
@@ -1037,6 +1116,8 @@ async function startRealtimeBridge(call, channelId) {
         say: timedOut ? policy.timeoutReply : 'Não consegui consultar o assistente agora. Podemos tentar novamente depois.',
         requiresConfirmation: false,
       };
+    } finally {
+      if (!cleaned) idleWatchdog?.resume();
     }
   }
 
@@ -1142,6 +1223,33 @@ async function startRealtimeBridge(call, channelId) {
       reason,
       realtimeStats: call.realtimeStats,
     });
+    idleWatchdog?.stop();
+  }
+
+  if (call.direction === 'inbound') {
+    idleWatchdog = createIdleWatchdog({
+      warningMs: config.inboundIdleWarningMs,
+      timeoutMs: config.inboundIdleTimeoutMs,
+      onWarning: () => {
+        if (cleaned || responseState.responseInFlight || call.pendingDecision || call.decisionResolving) {
+          resetIdleWatchdog('warning-deferred');
+          return;
+        }
+        emitCallEvent('call.idle.warning', callId, {});
+        requestAudioResponseWithOptions(buildIdleWarningResponse(), 'idle-warning', { queueIfBlocked: false });
+      },
+      onTimeout: () => {
+        if (cleaned) return;
+        if (responseState.responseInFlight || call.pendingDecision || call.decisionResolving) {
+          resetIdleWatchdog('timeout-deferred');
+          return;
+        }
+        emitCallEvent('call.idle.timed_out', callId, { timeoutMs: config.inboundIdleTimeoutMs });
+        cleanup('inactivity-timeout').catch((error) => {
+          console.error('[realtime] inactivity cleanup failed:', error.message);
+        });
+      },
+    });
   }
 
   try {
@@ -1225,6 +1333,7 @@ async function startRealtimeBridge(call, channelId) {
         if (msg.type === 'session.updated') {
           const ack = acknowledgeSessionUpdated(responseState);
           if (ack.type === 'initial-session-configured') {
+            resetIdleWatchdog('session-ready');
             for (const payload of queuedInboundAudioBeforeSession.splice(0)) {
               wsClient.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: payload.toString('base64') }));
             }
@@ -1232,10 +1341,15 @@ async function startRealtimeBridge(call, channelId) {
               model: config.realtimeModel,
               awaitingCalleeSpeech: call.direction !== 'inbound',
             });
+            // Speak once as soon as the inbound session is configured; the caller never
+            // has to speak first. `introductionSent` prevents a duplicate opening.
             if (call.direction === 'inbound' && !call.introductionSent) {
               call.introductionSent = true;
-              emitCallEvent('call.introduction.started', callId, { afterCalleeSpeech: false, inbound: true });
-              requestAudioResponseWithOptions(buildInboundGreetingResponse(config.inboundGreeting), 'inbound-greeting');
+              call.inboundGreetingSent = true;
+              emitCallEvent('call.inbound_greeting.started', callId, { greeting: config.inboundGreeting });
+              requestAudioResponseWithOptions(buildExactInboundGreetingResponse(config.inboundGreeting), 'inbound-greeting', {
+                queueIfBlocked: true,
+              });
             }
           } else if (ack.type === 'language-session-updated') {
             emitCallEvent('call.language.session_updated', callId, { language: ack.language });
@@ -1268,10 +1382,12 @@ async function startRealtimeBridge(call, channelId) {
         } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
           const transcript = readRealtimeTranscript(msg);
           if (transcript) {
+            resetIdleWatchdog('caller-transcript');
             call.callerTranscript = [call.callerTranscript, transcript].filter(Boolean).join('\n');
-            if (calleeExplicitlyRequestedHangup(transcript)) {
+            call.conversationTurns = appendConversationTurn(call.conversationTurns, 'caller', transcript);
+            if (callerExplicitlyRequestedHangup(transcript)) {
               call.calleeExplicitHangup = true;
-              emitCallEvent('call.callee.hangup_authorized', callId, { transcript });
+              emitCallEvent('call.caller.hangup_authorized', callId, { transcript });
             }
             emitCallEvent('call.transcript.caller', callId, { transcript, isFinal: true });
             const detectedLanguage = call.brief?.adapt_language !== false && detectCallLanguage(transcript);
@@ -1313,10 +1429,13 @@ async function startRealtimeBridge(call, channelId) {
         ) {
           const text = readRealtimeTranscript(msg);
           if (text) {
+            resetIdleWatchdog('assistant-transcript');
             call.companionTranscript = [call.companionTranscript, text].filter(Boolean).join('\n');
+            call.conversationTurns = appendConversationTurn(call.conversationTurns, 'assistant', text);
             emitCallEvent('call.transcript.companion', callId, { transcript: text, isFinal: true });
           }
         } else if (msg.type === 'input_audio_buffer.speech_started') {
+          resetIdleWatchdog('caller-speech-started');
           // The Realtime server cancels its current response on barge-in, but it
           // cannot retract frames already queued locally for RTP pacing.
           clearQueuedAudio('caller speech started');
@@ -1474,6 +1593,38 @@ async function startRealtimeBridge(call, channelId) {
 
 // ---------------------------------------------------------------------------
 
+async function reconcileInboundAdmissions() {
+  if (inboundReconciliationRunning) return;
+  inboundReconciliationRunning = true;
+  try {
+    const channels = await ariRequest('/channels');
+    inboundReconciliationLastResult = await reconcileInboundChannels(channels, {
+      ariApp: config.ariApp,
+      hasAdmissionForChannel: (channelId) => Boolean(findCallByChannel(channelId)),
+      // Reuse the StasisStart path. Reconciliation only creates a pending admission;
+      // only the authenticated admission endpoint can answer or start media.
+      admit: async (channel) => normalizeAriEvent({
+        type: 'StasisStart',
+        args: ['inbound-realtime'],
+        channel,
+      }),
+    });
+    inboundReconciliationLastError = null;
+  } catch (error) {
+    inboundReconciliationLastError = error.message;
+    console.error('[inbound] ARI reconciliation failed:', error.message);
+  } finally {
+    inboundReconciliationRunning = false;
+  }
+}
+
+function startInboundReconciliation() {
+  if (inboundReconciliationTimer || !Number.isFinite(config.inboundReconciliationIntervalMs)
+    || config.inboundReconciliationIntervalMs <= 0) return;
+  reconcileInboundAdmissions();
+  inboundReconciliationTimer = setInterval(reconcileInboundAdmissions, config.inboundReconciliationIntervalMs);
+}
+
 function wsUrlWithAuth() {
   const url = new URL(config.ariWsUrl);
   url.searchParams.set('api_key', `${config.ariUsername}:${config.ariPassword}`);
@@ -1524,6 +1675,12 @@ app.get('/health', async (req, res) => {
     ok: true,
     ari: await checkAriInfo(),
     wsConnected: ariWsConnected,
+    inboundReconciliation: {
+      intervalMs: config.inboundReconciliationIntervalMs,
+      running: inboundReconciliationRunning,
+      lastResult: inboundReconciliationLastResult,
+      lastError: inboundReconciliationLastError,
+    },
     knownCallCount: calls.size,
     localOnly: true,
     allowedExtensions: [...config.allowedExtensions],
@@ -1568,6 +1725,44 @@ app.get('/v1/calls/:id', (req, res) => {
   const call = calls.get(req.params.id);
   if (!call) return res.status(404).json({ error: 'Call not found' });
   return res.json(publicCall(call));
+});
+
+app.get('/v1/inbound-admissions', (req, res) => {
+  const pending = [...calls.values()]
+    .filter((call) => call.direction === 'inbound' && call.admission?.status === 'pending')
+    .map((call) => ({
+      id: call.id,
+      status: call.status,
+      admission: call.admission,
+    }));
+  return res.json({ admissions: pending });
+});
+
+app.post('/v1/calls/:id/admission', async (req, res, next) => {
+  try {
+    const call = calls.get(req.params.id);
+    if (!call || call.direction !== 'inbound') return res.status(404).json({ error: 'Inbound call not found' });
+    const decision = String(req.body?.decision ?? '');
+    const result = decideInboundAdmission(call.admission, decision);
+    if (call.admissionTimer) clearTimeout(call.admissionTimer);
+    emitCallEvent('call.inbound.admission_decided', call.id, {
+      decision,
+      status: result.status,
+      callerClass: call.callerClass,
+      callerLabel: call.trustedCaller?.label ?? null,
+      callerRelation: call.trustedCaller?.relation ?? null,
+    });
+    if (result.answer) {
+      await answerAdmittedInboundCall(call);
+    } else {
+      // A decline/leave-ringing decision deliberately does not call ARI answer,
+      // create a bridge, open Realtime, greet, or hang up the caller.
+      call.status = 'ringing';
+    }
+    return res.json(publicCall(call));
+  } catch (error) {
+    return next(Object.assign(error, { status: 400 }));
+  }
 });
 
 app.post('/v1/calls/:id/decisions/:decisionId/respond', (req, res, next) => {
@@ -1790,6 +1985,7 @@ app.use((error, req, res, next) => {
 });
 
 connectAriWebSocket();
+startInboundReconciliation();
 
 app.listen(config.port, () => {
   console.log(`Asterisk Hermes companion listening on :${config.port}`);

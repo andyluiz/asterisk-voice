@@ -13,8 +13,11 @@ import {
 import {
   DEFAULT_REALTIME_INTRODUCTION,
   DEFAULT_REALTIME_VOICE,
+  buildExactInboundGreetingResponse,
   buildRealtimeSessionUpdate,
   detectCallLanguage,
+  inboundGreetingForCall,
+  shouldStartInboundGreeting,
 } from '../src/realtime.js';
 import {
   acknowledgeSessionUpdated,
@@ -133,21 +136,21 @@ test('observed Portuguese transcript triggers a guarded pt-BR synchronization', 
   assert.equal(sessionAck.flushed[0].reason, 'observed-pizza-unavailability');
 });
 
-test('caller transcript responses do not create concurrent response.create events', () => {
+test('caller transcripts received during a response are queued for a follow-up response', () => {
   const state = createRealtimeResponseState(() => 'sync-1');
   acknowledgeSessionUpdated(state);
   const first = requestResponse(state, { type: 'response.create', response: {} }, 'first-turn');
   assert.equal(first.sent, true);
-  const second = requestResponse(state, { type: 'response.create', response: {} }, 'second-turn');
-  assert.equal(second.sent, false);
-  assert.equal(second.queued, false);
 
-  const queuedToolFollowup = requestResponse(state, { type: 'response.create', response: {} }, 'decision-result', { queueIfBlocked: true });
-  assert.equal(queuedToolFollowup.queued, true);
+  // Trace regression: “El panawiki.” arrived while the first answer was in flight.
+  // It must trigger a follow-up after that answer, not be silently discarded.
+  const second = requestResponse(state, { type: 'response.create', response: {} }, 'caller-transcript');
+  assert.equal(second.sent, false);
+  assert.equal(second.queued, true);
 
   const flushed = markResponseDone(state);
   assert.equal(flushed.length, 1);
-  assert.equal(flushed[0].reason, 'decision-result');
+  assert.equal(flushed[0].reason, 'caller-transcript');
   assert.equal(state.responseInFlight, true);
 });
 
@@ -165,6 +168,9 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   const instructions = update.session.instructions;
   assert.match(instructions, /# Role and Objective/);
   assert.match(instructions, /# Conversation Role/);
+  assert.match(instructions, /# Spoken Replies/);
+  assert.match(instructions, /Default to one short sentence, maximum fifteen words/);
+  assert.match(instructions, /Do not use filler, enthusiasm, motivational language, or a call-center tone/);
   assert.match(instructions, /# Mission Authority/);
   assert.match(instructions, /# Unclear Audio/);
   assert.match(instructions, /# Tools and Escalation/);
@@ -188,7 +194,7 @@ test('buildRealtimeSessionUpdate injects a generic immutable mission with safety
   assert.match(instructions, /When asked for one authorized datum, say only that datum/);
   assert.doesNotMatch(instructions, /PIZZA ORDER|pizza_order|toppings|ingredient/);
   assert.doesNotMatch(instructions, /SIMULATION:|simulation|testing|roleplay/i);
-  assert.equal(update.session.audio.output.voice, 'ash');
+  assert.equal(update.session.audio.output.voice, 'marin');
   assert.deepEqual(update.session.reasoning, { effort: 'low' });
 });
 
@@ -202,6 +208,8 @@ test('hermes voice mode uses a curated context and exposes a narrow Hermes hando
     },
   }, config);
   assert.match(update.session.instructions, /# Hermes Voice Mode/);
+  assert.match(update.session.instructions, /# Spoken Replies/);
+  assert.match(update.session.instructions, /With Anderson/);
   assert.match(update.session.instructions, /Anderson prefers concise Portuguese replies/);
   assert.match(update.session.instructions, /Handle greetings, short conversational replies, repetition, clarification, acknowledgement, and facts explicitly present in the voice context directly/);
   assert.match(update.session.instructions, /For research, tools, current information, private records, decisions, or external actions, call request_hermes/);
@@ -218,6 +226,52 @@ test('inbound calls use Hermes Voice mode and only expose the Hermes handoff too
   assert.match(update.session.instructions, /answering an inbound call/);
   assert.doesNotMatch(update.session.instructions, /You initiated this outbound call/);
   assert.deepEqual(toolNames, ['end_call', 'request_hermes']);
+});
+
+test('every inbound call has one mandatory greeting before caller speech', () => {
+  const inbound = {
+    direction: 'inbound',
+    brief: {
+      interaction_mode: 'hermes_voice',
+      preferred_language: 'pt-BR',
+      mission: 'Have a natural voice conversation with Anderson.',
+      voice_context: 'Concise Brazilian Portuguese.',
+    },
+  };
+  const greetingConfig = { ...config, inboundGreeting: 'Oi Anderson, aqui é o Hal. Pode falar.' };
+  const update = buildRealtimeSessionUpdate(inbound, greetingConfig);
+  const greeting = inboundGreetingForCall(inbound, { ...greetingConfig, realtimeGreeting: greetingConfig.inboundGreeting });
+
+  assert.equal(greeting, 'Oi Anderson, aqui é o Hal. Pode falar.');
+  assert.equal(shouldStartInboundGreeting(inbound), true);
+  assert.deepEqual(buildExactInboundGreetingResponse(greeting), {
+    type: 'response.create',
+    response: {
+      output_modalities: ['audio'],
+      instructions: 'Your complete and only output must be exactly this text, character for character: "Oi Anderson, aqui é o Hal. Pode falar." Do not add, omit, translate, explain, or repeat anything. Then stop and listen.',
+    },
+  });
+  assert.doesNotMatch(update.session.instructions, /# Mandatory Opening/);
+  assert.equal(shouldStartInboundGreeting({ ...inbound, inboundGreetingSent: true }), false);
+});
+
+test('inbound restricted mode does not expose private context or claim an outbound role', () => {
+  const update = buildRealtimeSessionUpdate({
+    activeLanguage: 'pt-BR',
+    direction: 'inbound',
+    callerClass: 'unknown',
+    brief: {
+      interaction_mode: 'inbound_restricted',
+      mission: 'You are handling an inbound call from an unrecognized caller. You may greet and clarify the caller’s purpose.',
+      voice_context: null,
+    },
+  }, config);
+  const instructions = update.session.instructions;
+  assert.match(instructions, /# Inbound Restricted Mode/);
+  assert.match(instructions, /Do not disclose personal data, private facts, contact information, schedules, locations, internal systems, or other conversations/);
+  assert.match(instructions, /Do not perform actions, make commitments, or claim access to services/);
+  assert.doesNotMatch(instructions, /You initiated this outbound call/);
+  assert.doesNotMatch(instructions, /Anderson prefers concise Portuguese replies/);
 });
 
 test('outbound mission mode exposes bounded decisions instead of Hermes Voice handoff', () => {
@@ -245,4 +299,52 @@ test('follow-up session.update omits voice after audio has started', () => {
     includeVoice: !state.outputAudioStarted,
   });
   assert.equal(update.session.audio.output.voice, undefined);
+});
+
+test('inbound greeting response is an exact one-line script, not a loose phrase', () => {
+  assert.deepEqual(buildExactInboundGreetingResponse('Olá, Anderson. Aqui é o Hal. Como posso ajudar?'), {
+    type: 'response.create',
+    response: {
+      output_modalities: ['audio'],
+      instructions: 'Your complete and only output must be exactly this text, character for character: "Olá, Anderson. Aqui é o Hal. Como posso ajudar?" Do not add, omit, translate, explain, or repeat anything. Then stop and listen.',
+    },
+  });
+});
+
+test('inbound Hermes Voice prompt is self-contained and excludes generic truncated configuration', () => {
+  const update = buildRealtimeSessionUpdate({
+    direction: 'inbound',
+    activeLanguage: 'pt-BR',
+    brief: {
+      interaction_mode: 'hermes_voice',
+      preferred_language: 'pt-BR',
+      voice_context: 'Anderson prefers concise Portuguese replies.',
+    },
+  }, {
+    realtimeModel: 'gpt-realtime-2.1-mini',
+    realtimeVoice: 'marin',
+    realtimeVadSilenceMs: 450,
+    realtimeInstructions: 'IDENTITY AND TONE: obsolete prefix...[truncated]',
+    inboundGreeting: 'Olá, Anderson. Aqui é o Hal. Como posso ajudar?',
+  });
+
+  assert.doesNotMatch(update.session.instructions, /obsolete prefix|\[truncated\]/);
+  assert.equal((update.session.instructions.match(/# Spoken Replies/g) || []).length, 1);
+  assert.doesNotMatch(update.session.instructions, /# Mandatory Opening/);
+  assert.match(update.session.instructions, /# Hermes Handoff/);
+});
+
+test('inbound Hermes handoff delegates request authority to application context', () => {
+  const update = buildRealtimeSessionUpdate({
+    direction: 'inbound',
+    activeLanguage: 'pt-BR',
+    brief: { interaction_mode: 'hermes_voice', preferred_language: 'pt-BR' },
+  }, {
+    realtimeModel: 'gpt-realtime-2.1-mini',
+    realtimeVoice: 'marin',
+    realtimeVadSilenceMs: 450,
+  });
+
+  assert.match(update.session.instructions, /The application sends the caller's recent words and chronological context to Hal/);
+  assert.doesNotMatch(update.session.instructions, /question that faithfully represents the current caller request/);
 });

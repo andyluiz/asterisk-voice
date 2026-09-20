@@ -42,7 +42,7 @@ function normalizeBrief(value) {
     throw new Error('Call brief completion_behavior is invalid');
   }
   const interactionMode = value.interaction_mode ?? 'outbound_mission';
-  if (!['outbound_mission', 'hermes_voice'].includes(interactionMode)) {
+  if (!['outbound_mission', 'hermes_voice', 'inbound_restricted'].includes(interactionMode)) {
     throw new Error('Call brief interaction_mode is invalid');
   }
   return Object.freeze({

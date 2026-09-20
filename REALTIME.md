@@ -34,11 +34,40 @@ Inbound phone or SIP extension
 6. Ordinary conversation stays in Realtime. `request_hermes` sends a bounded, authenticated text request to `HERMES_URL` and returns its validated `say` result to Realtime.
 7. Hangup, websocket close, UDP error, Hermes cancellation, or API delete cleans up the channels, bridge, socket, and call record.
 
+## Inbound calls
+
+The `700` internal dialplan extension routes an incoming SIP call to
+`Stasis(openclaw,inbound-realtime)` without `Answer()`. Stasis creates a durable,
+authenticated `pending_admission` request and leaves the caller ringing. Only
+`POST /v1/calls/:id/admission` with authenticated `{"decision":"answer"}` may
+invoke ARI answer and then create the ExternalMedia/Realtime bridge. `decline`,
+`leave_ringing`, and admission timeout create no media session and leave ringing
+until the caller ends the call. Pending requests are available at
+`GET /v1/inbound-admissions` and via the MCP admission tools.
+
+The Companion uses the caller ID from the ARI channel snapshot to select
+`hermes_voice` only for normalized identities configured as
+`E.164|label|relation` in `INBOUND_TRUSTED_CALLERS`. The voice prompt contains
+only server-authored label/relation, start time, opaque session ID, and curated
+context—never raw phone/ARI/SIP-display data. All other calls run an
+`inbound_restricted` session: it may greet and clarify purpose, but has no private
+context and cannot disclose personal data, perform actions, make commitments, or
+collect sensitive information.
+
+`INBOUND_HERMES_WEBHOOK_ROUTES` is a JSON table keyed by normalized local caller
+extension. A route is active only when it has a non-`default` profile, loopback
+webhook URL, and non-empty secret environment variable; there is no fallback. The
+sanitized template maps `1001 → hal`, with disabled `1002 → nova` and `1003 → kairo`
+placeholders until those profiles receive separate ports and secrets. Companion
+immediately sends only the opaque admission event plus server-selected
+`callerProfile` routing metadata with HMAC-V2 and a stable idempotency key. Delivery
+acceptance, timeout, or failure cannot answer, bridge, greet, or hang up a caller.
+
 ## Config
 
 - `OPENAI_API_KEY`: required for realtime calls.
 - `REALTIME_MODEL`: defaults to `gpt-realtime-2`.
-- `REALTIME_VOICE`: defaults to `alloy`.
+- `REALTIME_VOICE`: defaults to `marin`.
 - `REALTIME_INSTRUCTIONS`: system behavior for the voice session.
 - `REALTIME_GREETING`: optional first spoken response when the websocket opens.
 - `INBOUND_GREETING`: greeting spoken on inbound calls after the Realtime session is ready.
